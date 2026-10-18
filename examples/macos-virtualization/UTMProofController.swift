@@ -2,11 +2,61 @@
 // Scripting/UTMScripting.swift. All AppleEvents address one verified process.
 import AppKit
 import Foundation
+import CoreFoundation
 import ScriptingBridge
 
 struct ProofError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
+}
+
+struct GuestResult {
+    let exited: Bool
+    let exitCode: Int?
+    let stdout: Data?
+    let stderr: Data?
+
+    static func boolean(_ value: Any?) throws -> Bool {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw ProofError("Guest completion state must be a typed boolean")
+        }
+        return number.boolValue
+    }
+
+    static func integer(_ value: Any?) throws -> Int {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q"].contains(String(cString: number.objCType)),
+              number.doubleValue == Double(number.intValue) else {
+            throw ProofError("Guest process status must be a typed integer")
+        }
+        return number.intValue
+    }
+
+    static func decode(_ record: [AnyHashable: Any]) throws -> GuestResult {
+        // UTM.sdef exposes Cocoa hasExited as the AppleScript property 'exited'.
+        // PID-bound ScriptingBridge returns 'exited'; accept the explicit Cocoa
+        // alias too, but never accept missing, loosely coerced or conflicting state.
+        guard record["exited"] != nil || record["hasExited"] != nil else {
+            throw ProofError("Guest process returned no completion state")
+        }
+        let exited = try boolean(record["exited"] ?? record["hasExited"])
+        if let alias = record["hasExited"], record["exited"] != nil {
+            guard try boolean(alias) == exited else { throw ProofError("Conflicting guest completion states") }
+        }
+        if !exited { return GuestResult(exited: false, exitCode: nil, stdout: nil, stderr: nil) }
+        let code = try integer(record["exitCode"])
+        let signal = try integer(record["signalCode"])
+        guard (0...255).contains(code), signal == 0,
+              let output = record["outputData"] as? String,
+              let error = record["errorData"] as? String,
+              let stdout = Data(base64Encoded: output),
+              let stderr = Data(base64Encoded: error) else {
+            throw ProofError("Guest process returned incomplete, abnormal or invalid results")
+        }
+        return GuestResult(exited: true, exitCode: code, stdout: stdout, stderr: stderr)
+    }
 }
 
 #if !PROOF_IDENTITY_TESTS
@@ -161,17 +211,14 @@ final class Controller {
                               usingInput: "", base64Encoding: true, outputCapturing: true)
             }
             while true {
-                let result = try event { process.getResult!() }
-                guard let exited = result["hasExited"] as? Bool else { throw ProofError("Guest process returned no completion state") }
-                if !exited {
+                let result = try GuestResult.decode(event { process.getResult!() })
+                if !result.exited {
                     Thread.sleep(forTimeInterval: 0.2)
                     continue
                 }
-                guard let code = result["exitCode"] as? Int, (0...255).contains(code),
-                      let output = result["outputData"] as? String,
-                      let error = result["errorData"] as? String,
-                      let stdout = Data(base64Encoded: output),
-                      let stderr = Data(base64Encoded: error) else { throw ProofError("Guest process returned incomplete or invalid results") }
+                guard let code = result.exitCode, let stdout = result.stdout, let stderr = result.stderr else {
+                    throw ProofError("Completed guest result lacks validated fields")
+                }
                 try identity.verify(exclusive: exclusive)
                 FileHandle.standardOutput.write(stdout)
                 FileHandle.standardError.write(stderr)

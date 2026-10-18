@@ -1,7 +1,7 @@
 # UTM
 
-UTM runs a disposable clone of a prepared, stopped Linux ARM64 QEMU VM on the
-local Mac. Crabbox owns the clone and reuses the normal SSH sync, command,
+UTM runs a disposable clone of a prepared, stopped Linux ARM64 QEMU VM or
+installs a fresh Apple macOS ARM64 VM from an explicit local IPSW on the local Mac. Crabbox owns the clone and reuses the normal SSH sync, command,
 results, retention and release paths. The source template stays outside the
 lease's destructive operations.
 
@@ -27,9 +27,10 @@ CLI can have a separate macOS Automation authorization status; a working
 
 A guest agent is not required. QEMU guest-agent IP addresses inside emulated
 networking are not host-routable, so Crabbox allocates an explicit loopback port
-forward. Shared/bridged networking, Apple backend guests, x86 guests, native
-Windows, macOS, desktop/browser/code capabilities and native checkpoints are
-not supported by this initial implementation.
+forward. The prepared-template path supports QEMU Linux ARM64 only. Shared
+networking is used by the separate fresh-macOS path below. Bridged networking,
+x86 guests, native Windows and desktop/browser/code capabilities are unsupported.
+This acquisition feature does not add native checkpoints.
 
 ## Configuration
 
@@ -49,7 +50,7 @@ utm:
 
 The UUID above is a placeholder. Prepare and shut down your template before
 selecting its actual UUID. `utm.sshKey` may fall back to the shared `sshKey`
-configuration. The provider does not install keys, change user preferences,
+configuration. The template acquisition path does not install keys, change user preferences,
 install guest software, or mutate the template. Credentials are reused from the
 prepared template, so restrict access to its private key and guest services.
 
@@ -124,3 +125,99 @@ Doctor checks the CLI executable with `--help`, application inventory and stoppe
 configuration, plus access to the configured clone storage directory. It creates
 or starts no VM. Guest OS, architecture, authentication,
 tools and intended clone identity are verified only after acquisition.
+
+
+## Fresh macOS from an IPSW
+
+Set `utm.acquisition: ipsw` to create an independent Apple-backend VM without a
+prepared template. This mode requires all of the following:
+
+- A local Apple Silicon Mac running macOS 27 or later, with UTM 5.0.8 or later
+  and working published application scripting access.
+- Full Xcode selected with a macOS 27 or later SDK. Crabbox compiles a small
+  embedded Swift helper using `xcrun swiftc`, ad-hoc signs it with Apple's
+  virtualization entitlement, and removes its private temporary directory after
+  the read-only inspection. This dependency is on the host; the guest does not
+  need Xcode, Node.js, or a guest agent for SSH workloads.
+- An operator-selected, readable local IPSW containing macOS 27 or later and
+  no newer than the host. Native `VZMacOSRestoreImage` inspection must find a
+  supported hardware model. Older host/guest combinations require a prepared
+  guest rather than automatic Setup Assistant bypass.
+- The actual UTM bundle storage directory and enough local capacity for the
+  guest installation. A new VM keeps UTM's macOS display/input devices, one
+  Shared NIC, and its default 64 GiB system disk. CPU and memory are chosen to
+  meet the restore image's native requirements, with a baseline of two CPUs and
+  8 GiB memory.
+
+```yaml
+provider: utm
+target: macos
+architecture: arm64
+utm:
+  acquisition: ipsw
+  appPath: /Applications/UTM.app
+  storageRoot: /path/to/utm-bundles
+  ipsw: /path/to/UniversalMac_Restore.ipsw
+  user: crabbox
+  workRoot: /tmp/crabbox
+  installTimeout: 45m
+  startupTimeout: 10m
+```
+
+Omit `utm.template`. No prepared-template SSH key or password is required for
+this mode. `/tmp/crabbox` is the shared default work root on both guest platforms;
+an explicit `utm.workRoot` remains effective. The guest needs its stock `bash`,
+`rsync`, `tar`, `sw_vers` and `ifconfig` tools.
+
+Crabbox generates a fresh random account password in memory, validates it and
+the account with Apple's SDK before creating a VM, and sends it to the native
+validator and UTM first-boot command through protected stdin. It never puts that
+password on argv, in configuration, in the ownership journal, or in ordinary
+command output. Credential-bearing operation failures report fixed categories;
+their raw error output is suppressed. Automatic login stays disabled. First boot
+creates the requested account and enables Remote Login through UTM's supported
+provisioning record.
+
+The password is used only for initial in-process SSH authentication. The guest
+must prove Darwin/ARM64, the inspected macOS version/build, and its recorded NIC
+MAC before Crabbox installs a generated per-lease public key. Crabbox then pins
+the observed SSH host key and verifies a separate key-only SSH connection before
+returning a workload lease. The generated private key stays in the protected
+provider state directory until confirmed release. Initial host-key trust relies
+on the trusted local VM network; ARP discovery and the guest MAC check do not
+provide an independent cryptographic channel to the hypervisor. Continuing
+connections require the pinned host key. Restrict access to the host and local
+VM network accordingly.
+
+`crabbox doctor --provider utm` checks the selected mode without creating,
+installing, or starting a VM. In IPSW mode it reports image compatibility, host
+and guest versions, resource requirements and native account validation, and
+explains the temporary compiler/helper work it performs. Successful preflight is
+not successful OS installation or workload readiness.
+
+Creation, installation and first boot have separate durable phases. The
+installation-start response is pending: Crabbox polls `query install` through
+completion and observes the owned VM stopped before first boot. UTM checks
+pending-install, suspended and recovery eligibility before it starts the guest.
+An uncertain first-start submission is recorded before sending credentials and
+is never replayed. A UTM restart can lose its in-memory installation query;
+Crabbox preserves the recovery record rather than guessing whether it should
+reinstall. It never resets an existing guest account.
+
+The Apple backend's published `query ip` reads its first NIC's IPv4 ARP entry.
+Crabbox polls this within the startup deadline and verifies the same MAC inside
+the authenticated guest. DHCP addresses can change; retained-lease resolution
+refreshes discovery and verifies the pinned key and guest identity, without
+reinstalling or replaying first-boot credentials. The original IPSW can be moved
+after acquisition without blocking retained reuse or release. VM display-name
+changes are allowed when the exact journal UUID, ownership marker, bundle and
+NIC identity remain consistent.
+
+`crabbox ls --provider utm` exposes separate `utm_installation`,
+`utm_first_boot_submitted`, `utm_account_verified` and `utm_ssh_verified` labels.
+On failure, preserve the journal and use the normal exact-lease `stop` or cleanup
+path. Confirmed release deletes only the owned VM and its derived generated-key
+files. The IPSW and unrelated VMs remain outside the destructive scope. A lost
+initial account password is not recovered or persisted; continuing access uses
+the lease's private key. If acquisition never reaches continuing SSH readiness,
+release the incomplete lease and acquire a new VM.

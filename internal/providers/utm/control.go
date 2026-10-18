@@ -141,6 +141,9 @@ func validateTemplate(v vm) error {
 	return nil
 }
 func validateClone(v vm, r record) error {
+	if r.isMacOS() {
+		return validateMacOSVM(v, r)
+	}
 	if v.ID != r.VMID || v.ID == r.SourceID || v.Backend != "qemu" || v.Configuration.Notes != r.marker() {
 		return fmt.Errorf("UTM VM %s ownership/configuration does not match lease %s", v.ID, r.LeaseID)
 	}

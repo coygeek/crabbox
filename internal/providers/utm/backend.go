@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ var waitForSSHReady = core.WaitForSSHReady
 func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (lease core.LeaseTarget, err error) {
 	if req.RequestedLeaseID != "" {
 		return lease, fmt.Errorf("provider=utm does not support caller-supplied lease IDs")
+	}
+	if b.cfg.UTM.Acquisition == "ipsw" {
+		return b.acquireMacOS(ctx, req)
 	}
 	if _, err := b.storageRoot(); err != nil {
 		return lease, err
@@ -198,8 +202,17 @@ func (b *backend) project(r record, vms []vm) core.Server {
 	if claim, exists, err := core.ReadLeaseClaimWithPresence(r.LeaseID); err == nil && exists && claim.Provider == "utm" && claim.CloudID == r.VMID {
 		labels = shared.CloneLabels(claim.Labels)
 	}
+	if r.isMacOS() {
+		labels["utm_installation"] = fmt.Sprint(r.InstallComplete)
+		labels["utm_first_boot_submitted"] = fmt.Sprint(r.FirstBootSubmitted)
+		labels["utm_account_verified"] = fmt.Sprint(r.AccountComplete)
+		labels["utm_ssh_verified"] = fmt.Sprint(r.SSHReady)
+	}
 	s := core.Server{Provider: "utm", CloudID: r.VMID, Name: name, Status: status, Labels: labels}
 	s.PublicNet.IPv4.IP = "127.0.0.1"
+	if r.isMacOS() {
+		s.PublicNet.IPv4.IP = r.Address
+	}
 	return s
 }
 func (b *backend) target(r record, vms []vm) core.LeaseTarget {
@@ -217,6 +230,16 @@ func (b *backend) target(r record, vms []vm) core.LeaseTarget {
 	// A clone retains template host keys, so authentication alone cannot establish
 	// which guest owns a forwarded port. Verify its newly assigned NIC identity.
 	target.ReadyCheck = fmt.Sprintf(`test "$(uname -s)" = Linux && test "$(uname -m)" = %s && command -v bash >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null && (found=0; for f in /sys/class/net/*/address; do if test "$(cat "$f")" = %s; then found=1; fi; done; test "$found" = 1)`, core.ShellQuote(machine), core.ShellQuote(r.MAC))
+	if r.isMacOS() {
+		dir, _ := macOSKeyDir(r)
+		target = core.SSHTarget{Host: r.Address, User: r.User, Key: r.SSHKey, Port: "22", TargetOS: core.TargetMacOS,
+			SSHHostKey: r.SSHHostKey, HostKeyAlias: "crabbox-utm-" + r.LeaseID, KnownHostsFile: filepath.Join(dir, "known_hosts"),
+			AuthoritativeKnownHosts: true, NoControlMaster: true, ReadyCheck: macOSReadyCheck(r)}
+		if r.SSHHostKey != "" {
+			target.PrepareConnection = func(context.Context) error { return b.pinMacOSHostKey(r) }
+		}
+
+	}
 	return core.LeaseTarget{Server: b.project(r, vms), SSH: target, LeaseID: r.LeaseID}
 }
 func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.LeaseTarget, error) {
@@ -265,6 +288,18 @@ func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.Le
 	}
 	if err = shared.AuthorizeClaimActivity(claim); err != nil {
 		return lease, err
+	}
+	if r.isMacOS() {
+		if err = b.validateOwnedMacOS(ctx, r, vms, false); err != nil {
+			return lease, err
+		}
+		if !r.SSHReady {
+			return lease, fmt.Errorf("UTM macOS continuing access is incomplete; release and acquire again")
+		}
+		if err = b.refreshMacOSAddress(ctx, &r); err != nil {
+			return lease, err
+		}
+		lease = b.target(r, vms)
 	}
 	if err = waitForSSHReady(ctx, &lease.SSH, b.rt.Stderr, "UTM retained guest identity", b.cfg.UTM.StartupTimeout); err != nil {
 		return lease, err

@@ -18,7 +18,7 @@ type Provider struct{}
 func (Provider) Spec() core.ProviderSpec {
 	return core.ProviderSpec{Name: "utm", Family: "utm", Kind: core.ProviderKindSSHLease,
 		Authentication: core.DirectProviderAuthentication(core.ProviderAuthenticationLocalContext),
-		Targets:        []core.TargetSpec{{OS: core.TargetLinux}}, Features: core.FeatureSet{core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup}, Coordinator: core.CoordinatorNever, ClassDisposition: core.ProviderClassDispositionUnmapped, ActionsRunnerUnsupported: true}
+		Targets:        []core.TargetSpec{{OS: core.TargetLinux}, {OS: core.TargetMacOS}}, Features: core.FeatureSet{core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup}, Coordinator: core.CoordinatorNever, ClassDisposition: core.ProviderClassDispositionUnmapped, ActionsRunnerUnsupported: true}
 }
 func (Provider) RegisterFlags(fs *flag.FlagSet, cfg core.Config) any {
 	return core.RegisterUTMConfigFlags(fs, cfg.UTM)
@@ -36,8 +36,11 @@ func (Provider) ApplyConfigDefaults(cfg *core.Config) error {
 	if !core.IsArchitectureExplicit(*cfg) {
 		cfg.Architecture = "arm64"
 	}
-	if cfg.TargetOS == "" {
+	if cfg.TargetOS == "" || !core.IsTargetExplicit(cfg) {
 		cfg.TargetOS = core.TargetLinux
+		if cfg.UTM.Acquisition == "ipsw" {
+			cfg.TargetOS = core.TargetMacOS
+		}
 	}
 	if cfg.UTM.User != "" {
 		cfg.SSHUser = cfg.UTM.User
@@ -48,22 +51,35 @@ func (Provider) ApplyConfigDefaults(cfg *core.Config) error {
 	return nil
 }
 func (Provider) SupportsArchitecture(cfg core.Config, arch string) bool {
-	return cfg.TargetOS == core.TargetLinux && arch == "arm64"
+	return (cfg.TargetOS == core.TargetLinux || cfg.TargetOS == core.TargetMacOS) && arch == "arm64"
 }
 func (Provider) ClaimScope(cfg core.Config) string {
 	return "utm:" + filepath.Clean(core.ExpandUserPath(cfg.UTM.AppPath))
 }
 func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, error) {
-	if cfg.TargetOS != "" && cfg.TargetOS != core.TargetLinux {
-		return nil, core.Exit(2, "provider=utm currently supports prepared Linux QEMU guests only; Apple, macOS and Windows guests are unsupported")
+	mode := cfg.UTM.Acquisition
+	if mode == "" {
+		mode = "template"
+	}
+	if mode != "template" && mode != "ipsw" {
+		return nil, core.Exit(2, "utm.acquisition must be template or ipsw")
+	}
+	wantedOS := core.TargetLinux
+	if mode == "ipsw" {
+		wantedOS = core.TargetMacOS
+	}
+	if cfg.TargetOS != "" && cfg.TargetOS != wantedOS {
+		return nil, core.Exit(2, "UTM acquisition=%s requires target OS %s", mode, wantedOS)
 	}
 	if cfg.Tailscale.Enabled || string(cfg.Network) == "tailscale" {
-		return nil, core.Exit(2, "provider=utm requires the local loopback SSH transport; Tailscale is unsupported")
+		return nil, core.Exit(2, "provider=utm requires its local VM SSH transport; Tailscale is unsupported")
 	}
 	if cfg.Desktop || cfg.Browser || cfg.Code {
 		return nil, core.Exit(2, "provider=utm does not support desktop, browser or code capabilities")
 	}
 	c := cfg.UTM
+	c.Acquisition = mode
+	c.IPSW = core.ExpandUserPath(c.IPSW)
 	if c.AppPath == "" {
 		c.AppPath = core.UTMConfigDefaultAppPath
 	}
@@ -81,6 +97,9 @@ func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, err
 	if c.WorkRoot == "" {
 		c.WorkRoot = core.UTMConfigDefaultWorkRoot
 	}
+	if c.InstallTimeout <= 0 {
+		c.InstallTimeout = core.UTMConfigDefaultInstallTimeout
+	}
 	if c.StartupTimeout <= 0 {
 		c.StartupTimeout = core.UTMConfigDefaultStartupTimeout
 	}
@@ -92,7 +111,7 @@ func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, err
 		return nil, fmt.Errorf("invalid utm.user")
 	}
 	cfg.Provider = "utm"
-	cfg.TargetOS = core.TargetLinux
+	cfg.TargetOS = wantedOS
 	cfg.UTM = c
 	cfg.SSHUser = c.User
 	cfg.SSHKey = c.SSHKey
@@ -103,6 +122,9 @@ func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, err
 func (Provider) ConfigShowSection(cfg core.Config) core.ProviderConfigShowSection {
 	c := cfg.UTM
 	return core.ProviderConfigShowSection{JSONKey: "utm", TextLabel: "utm", Providers: []string{"utm"}, Fields: []core.ProviderConfigShowField{
+		{JSONName: "acquisition", JSONValue: c.Acquisition, TextName: "acquisition", TextValue: c.Acquisition},
+		{JSONName: "ipsw", JSONValue: c.IPSW, TextName: "ipsw", TextValue: c.IPSW},
+		{JSONName: "installTimeout", JSONValue: c.InstallTimeout.String(), TextName: "install_timeout", TextValue: c.InstallTimeout.String()},
 		{JSONName: "appPath", JSONValue: c.AppPath, TextName: "app", TextValue: c.AppPath},
 		{JSONName: "storageRoot", JSONValue: c.StorageRoot, TextName: "storage_root", TextValue: c.StorageRoot},
 		{JSONName: "template", JSONValue: c.Template, TextName: "template", TextValue: c.Template},

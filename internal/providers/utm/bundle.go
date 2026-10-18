@@ -123,6 +123,9 @@ type bundleNetwork struct {
 }
 
 func (b *backend) validateBundle(ctx context.Context, path string, r record, v vm) error {
+	if r.isMacOS() {
+		return b.validateMacOSBundle(ctx, path, r, v)
+	}
 	var info bundleInformation
 	var networks []bundleNetwork
 	var backend, architecture string
@@ -136,7 +139,7 @@ func (b *backend) validateBundle(ctx context.Context, path string, r record, v v
 			return err
 		}
 	}
-	if !strings.EqualFold(info.UUID, r.VMID) || strings.EqualFold(info.UUID, r.SourceID) || info.Name != r.OwnedName || info.Notes != v.Configuration.Notes || backend != "QEMU" || architecture != r.Architecture {
+	if !strings.EqualFold(info.UUID, r.VMID) || strings.EqualFold(info.UUID, r.SourceID) || info.Name != v.Name || info.Notes != v.Configuration.Notes || backend != "QEMU" || architecture != r.Architecture {
 		return fmt.Errorf("UTM on-disk clone identity does not match its recorded UUID/name and live configuration")
 	}
 	if len(networks) != 1 || networks[0].Mode != "Emulated" || !strings.EqualFold(networks[0].MacAddress, v.Configuration.Networks[0].Address) {

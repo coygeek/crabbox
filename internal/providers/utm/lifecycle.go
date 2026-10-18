@@ -61,6 +61,16 @@ func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID str
 			if v.ID == r.SourceID {
 				return fmt.Errorf("refusing to delete UTM source template")
 			}
+			if r.isMacOS() {
+				if v.Backend != "apple" || v.Configuration.Notes != r.marker() {
+					return fmt.Errorf("UTM Apple deletion ownership mismatch")
+				}
+				if r.Configured {
+					if err = b.validateOwnedMacOS(ctx, *r, current, false); err != nil {
+						return err
+					}
+				}
+			}
 			if r.Configured {
 				if err = validateClone(v, *r); err != nil {
 					return err
@@ -91,6 +101,9 @@ func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID str
 		return nil
 	}
 	if err = core.CleanupLeaseClaimIfUnchangedAfterContext(ctx, r.LeaseID, claim, exists, action); err != nil {
+		return err
+	}
+	if err := b.removeGeneratedKey(*r); err != nil {
 		return err
 	}
 	return removeRecord(r.LeaseID)
@@ -156,6 +169,9 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	return errors.Join(failures...)
 }
 func (b *backend) Doctor(ctx context.Context, _ core.DoctorRequest) (core.DoctorResult, error) {
+	if b.cfg.UTM.Acquisition == "ipsw" {
+		return b.doctorMacOS(ctx)
+	}
 	result := core.DoctorResult{Provider: "utm", Message: "local macOS + prepared Linux QEMU template; emulated network + unique loopback SSH; mutation=false", Checks: []core.DoctorCheck{}}
 	add := func(name, status, message string) {
 		result.Checks = append(result.Checks, core.DoctorCheck{Check: name, Status: status, Message: message})

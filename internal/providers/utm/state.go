@@ -25,6 +25,20 @@ func validUUID(s string) bool { return uuidPattern.MatchString(s) }
 // recovery after interruption without treating a name as deletion authority.
 // Once resolved, VMID is immutable and all destructive calls use only that UUID.
 type record struct {
+	Acquisition        string `json:"acquisition,omitempty"`
+	Backend            string `json:"backend,omitempty"`
+	TargetOS           string `json:"targetOS,omitempty"`
+	ImageVersion       string `json:"imageVersion,omitempty"`
+	ImageBuild         string `json:"imageBuild,omitempty"`
+	ImagePath          string `json:"imagePath,omitempty"`
+	Address            string `json:"address,omitempty"`
+	SSHHostKey         string `json:"sshHostKey,omitempty"`
+	GeneratedKey       bool   `json:"generatedKey,omitempty"`
+	InstallComplete    bool   `json:"installComplete,omitempty"`
+	FirstBootSubmitted bool   `json:"firstBootSubmitted,omitempty"`
+	AccountComplete    bool   `json:"accountComplete,omitempty"`
+	SSHReady           bool   `json:"sshReady,omitempty"`
+
 	Version      int               `json:"version"`
 	LeaseID      string            `json:"leaseId"`
 	Slug         string            `json:"slug"`
@@ -48,10 +62,24 @@ type record struct {
 	Labels       map[string]string `json:"labels"`
 }
 
+func (r record) isMacOS() bool  { return r.Version == 2 && r.Acquisition == "ipsw" }
 func (r record) marker() string { return "crabbox:utm:v1:" + r.LeaseID + ":" + r.Token }
 func (r record) validate() error {
-	if r.Version != 1 || !validUUID(r.SourceID) || r.LeaseID == "" || strings.ContainsAny(r.LeaseID, "/\\.\x00") || r.Token == "" || r.OwnedName != "crabbox-utm-"+r.Token || r.Port < 1024 || r.Port > 65535 || !filepath.IsAbs(r.AppPath) {
+	if (r.Version != 1 && r.Version != 2) || r.LeaseID == "" || strings.ContainsAny(r.LeaseID, "/\\.\x00") || r.Token == "" || r.OwnedName != "crabbox-utm-"+r.Token || !filepath.IsAbs(r.AppPath) {
 		return fmt.Errorf("invalid UTM ownership journal")
+	}
+	if r.isMacOS() {
+		if r.Backend != "apple" || r.TargetOS != core.TargetMacOS || r.SourceID != "" || r.Port != 22 || r.Architecture != "aarch64" || r.ImageVersion == "" || r.ImageBuild == "" || !r.GeneratedKey {
+			return fmt.Errorf("invalid UTM macOS ownership journal")
+		}
+		if r.Configured && (r.MAC == "" || r.BundlePath == "") {
+			return fmt.Errorf("incomplete UTM macOS identity")
+		}
+		if r.FirstBootSubmitted && !r.InstallComplete || r.AccountComplete && !r.FirstBootSubmitted || r.SSHReady && (!r.AccountComplete || r.SSHHostKey == "" || r.Address == "") {
+			return fmt.Errorf("invalid UTM macOS provisioning phases")
+		}
+	} else if r.Version != 1 || r.Acquisition != "" && r.Acquisition != "template" || !validUUID(r.SourceID) || r.Port < 1024 || r.Port > 65535 {
+		return fmt.Errorf("invalid UTM template ownership journal")
 	}
 	if r.VMID != "" && (!validUUID(r.VMID) || strings.EqualFold(r.VMID, r.SourceID)) {
 		return fmt.Errorf("UTM journal has unsafe clone UUID")
@@ -266,6 +294,9 @@ func (b *backend) reconcile(ctx context.Context, r *record, vms []vm) error {
 	}
 	var candidates []vm
 	for _, v := range vms {
+		if r.isMacOS() && (v.Backend != "apple" || v.Configuration.Notes != r.marker()) {
+			continue
+		}
 		if v.Name == r.OwnedName && !before[strings.ToLower(v.ID)] && !strings.EqualFold(v.ID, r.SourceID) {
 			candidates = append(candidates, v)
 		}

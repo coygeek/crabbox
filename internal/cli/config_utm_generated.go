@@ -8,6 +8,9 @@ import (
 )
 
 type fileUTMConfig struct {
+	Acquisition    string `yaml:"acquisition,omitempty"`
+	IPSW           string `yaml:"ipsw,omitempty"`
+	InstallTimeout string `yaml:"installTimeout,omitempty"`
 	AppPath        string `yaml:"appPath,omitempty"`
 	StorageRoot    string `yaml:"storageRoot,omitempty"`
 	Template       string `yaml:"template,omitempty"`
@@ -17,6 +20,8 @@ type fileUTMConfig struct {
 	StartupTimeout string `yaml:"startupTimeout,omitempty"`
 }
 
+const UTMConfigDefaultAcquisition string = "template"
+const UTMConfigDefaultInstallTimeout time.Duration = 2700 * time.Second
 const UTMConfigDefaultAppPath string = "/Applications/UTM.app"
 const UTMConfigDefaultUser string = "crabbox"
 const UTMConfigDefaultWorkRoot string = "/tmp/crabbox"
@@ -24,6 +29,8 @@ const UTMConfigDefaultStartupTimeout time.Duration = 300 * time.Second
 
 func defaultUTMConfig() UTMConfig {
 	return UTMConfig{
+		Acquisition:    UTMConfigDefaultAcquisition,
+		InstallTimeout: UTMConfigDefaultInstallTimeout,
 		AppPath:        UTMConfigDefaultAppPath,
 		User:           UTMConfigDefaultUser,
 		WorkRoot:       UTMConfigDefaultWorkRoot,
@@ -44,12 +51,15 @@ func (cfg *UTMConfig) applyFile(file *fileUTMConfig) (UTMConfigApplied, error) {
 
 func (cfg *UTMConfig) applyEnv() (UTMConfigApplied, error) {
 	var applied UTMConfigApplied
-	err := applyConfigEnvironment(cfg, &applied, 0, 7)
+	err := applyConfigEnvironment(cfg, &applied, 0, 10)
 	return applied, err
 }
 
 // UTMConfigFlagValues holds parsed values; only visited flags are applied.
 type UTMConfigFlagValues struct {
+	Acquisition    *string
+	IPSW           *string
+	InstallTimeout *string
 	AppPath        *string
 	StorageRoot    *string
 	Template       *string

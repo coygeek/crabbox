@@ -9,6 +9,7 @@ import os
 import plistlib
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import struct
@@ -441,6 +442,37 @@ def validate_vm(config, backend):
     require(config.get("Drive"), "Guest fixture has no internal disk")
 
 
+def observed_backend(text):
+    # UTMProcess.arguments renders a flat command line, quoting arguments that
+    # contain spaces. Inspect one complete fresh launch record, not other log text.
+    launches = [
+        line
+        for line in text.splitlines(keepends=True)
+        if line.startswith("Launching: qemu-system-")
+    ]
+    require(
+        len(launches) == 1 and launches[0].endswith("\n"),
+        "Expected one complete fresh QEMU launch record; inspect evidence/backend.log",
+    )
+    try:
+        arguments = shlex.split(launches[0][len("Launching: ") :])
+    except ValueError as exc:
+        raise RuntimeError(
+            "Cannot parse fresh UTM launch arguments; inspect evidence/backend.log"
+        ) from exc
+    positions = [i for i, value in enumerate(arguments) if value == "-accel"]
+    require(
+        len(positions) == 1 and positions[0] + 1 < len(arguments),
+        "Fresh launch must declare exactly one explicit accelerator; inspect evidence/backend.log",
+    )
+    accelerator = arguments[positions[0] + 1].split(",", 1)[0]
+    require(
+        accelerator in ("hvf", "tcg"),
+        "Fresh launch uses an unsupported or ambiguous accelerator; inspect evidence/backend.log",
+    )
+    return "qemu-" + accelerator
+
+
 def capture_backend(run, vm):
     logs = list(vm.rglob("debug.log"))
     if len(logs) != 1:
@@ -462,7 +494,13 @@ def capture_backend(run, vm):
     selected += "\n" + "\n".join(errors[-30:])
     selected = run.scrub(selected.encode()).decode()
     selected = re.sub(r"(?i)(password=)[^,\s]+", r"\1<redacted>", selected)
-    (run.evidence / "backend.log").write_text(selected)
+    # Keep the first pre-validation snapshot even when cleanup adds later output.
+    destination = run.evidence / (
+        "backend-final.log"
+        if (run.evidence / "backend.log").exists()
+        else "backend.log"
+    )
+    destination.write_bytes(selected.encode()[:LIMIT])
     return text
 
 
@@ -707,18 +745,12 @@ def boot(run, args):
                     "bootId": lines[2],
                 }
                 backend_log = capture_backend(run, vm)
-                # UTM 5.0.8 writes its NSArray of launch arguments. HVF must be explicit;
-                # TCG may be the QEMU default but must never show an HVF launch.
+                actual_backend = observed_backend(backend_log)
+                run.result["observedBackend"] = actual_backend
+                run.flush()
                 require(
-                    "Launching: qemu-system-" in backend_log,
-                    "Fresh backend launch arguments missing from debug.log",
-                )
-                launched_hvf = bool(
-                    re.search(r'"?-accel"?\s*,\s*"?hvf(?:,|"|\s)', backend_log)
-                )
-                require(
-                    launched_hvf == (args.backend == "qemu-hvf"),
-                    "Observed launch accelerator differs from declared backend; inspect fresh debug.log",
+                    actual_backend == args.backend,
+                    "Observed launch accelerator differs from declared backend; inspect evidence/backend.log",
                 )
                 run.command("controller-final-identity", [*ctl, "identity"], timeout=5)
                 run.result["runtime"] = "passed"

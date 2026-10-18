@@ -295,9 +295,9 @@ class WorkloadTests(unittest.TestCase):
             if name.startswith("guest-challenge"):
                 log = run.work / "proof.utm/Data/debug.log"
                 log.write_text(
-                    'Launching: qemu-system-aarch64 ("-accel", '
+                    "Launching: qemu-system-aarch64 -cpu host -machine virt,gic-version=3 -accel "
                     + accelerator
-                    + ', "-m", 1024)\n'
+                    + ' -m 2048 -name "Crabbox proof test"\nEnvironment variables:\nPRIVATE_AUTH=uncollected-fixture-value\n'
                 )
                 nonce = run.result["runId"] if response == "fresh" else "stale-run-id"
                 return (
@@ -309,6 +309,11 @@ class WorkloadTests(unittest.TestCase):
             if name.startswith("cleanup-status"):
                 return 0, "stopped\n" if stopped else "started\n"
             if name == "guest-delete":
+                if response == "fresh":
+                    self.assertTrue(
+                        (run.evidence / "backend.log").is_file(),
+                        "Capture must precede destructive cleanup",
+                    )
                 shutil.rmtree(run.work / "proof.utm")
             return 0, ""
 
@@ -389,9 +394,44 @@ class WorkloadTests(unittest.TestCase):
         run, _ = self.simulate_boot(response="stale")
         self.assertNotEqual(run.result["runtime"], "passed")
 
+    def test_actual_flat_launch_format_requires_explicit_matching_accelerator(self):
+        # Sanitized representation of the retained live launch record, not NSArray.
+        line = 'Launching: qemu-system-aarch64 -cpu host -machine virt,gic-version=3 -accel hvf -m 2048 -name "Crabbox proof test"\n'
+        self.assertEqual(workload.observed_backend(line), "qemu-hvf")
+        self.assertEqual(
+            workload.observed_backend(
+                line.replace("-accel hvf", "-accel tcg,tb-size=512")
+            ),
+            "qemu-tcg",
+        )
+        self.assertEqual(
+            workload.observed_backend(line.replace("-accel hvf", "-accel hvf,tso=on")),
+            "qemu-hvf",
+        )
+        for changed in (
+            line.replace("-accel hvf", ""),
+            line.replace("-accel hvf", "-accel"),
+            line.replace("-accel hvf", "-accel hvf:tcg"),
+            line.replace("-accel hvf", "-accel hvf -accel tcg"),
+            line + line,
+            line.rstrip("\n"),
+            line.replace("-accel hvf", '-name "guest -accel hvf"'),
+        ):
+            with self.subTest(launch=changed), self.assertRaises(RuntimeError):
+                workload.observed_backend(changed)
+
     def test_guest_boot_without_selected_accelerator_never_passes(self):
         run, _ = self.simulate_boot(accelerator="tcg")
         self.assertNotEqual(run.result["runtime"], "passed")
+        self.assertEqual(run.result["observedBackend"], "qemu-tcg")
+        self.assertFalse((run.work / "proof.utm").exists())
+        saved = (run.evidence / "backend.log").read_text()
+        self.assertIn("-accel tcg", saved)
+        self.assertNotIn("PRIVATE_AUTH", saved)
+        self.assertNotIn("uncollected-fixture-value", saved)
+        self.assertLessEqual(
+            (run.evidence / "backend.log").stat().st_size, workload.LIMIT
+        )
 
     def test_cleanup_does_not_delete_unconfirmed_running_copy(self):
         run, calls = self.simulate_boot(stopped=False)

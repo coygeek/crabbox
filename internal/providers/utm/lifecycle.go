@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	core "github.com/openclaw/crabbox/internal/cli"
@@ -25,9 +26,37 @@ func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest
 	if err = core.ValidateLeaseTargetProviderIdentity(req.Lease, req.ExpectedProviderIdentity); err != nil {
 		return err
 	}
-	return b.releaseRecord(ctx, &r, req.CheckpointID, req.GuardedRemoteCleanup)
+	expected, exists, snapshotSet := core.ServerLeaseClaimSnapshot(req.Lease.Server)
+	if !snapshotSet && r.State == "ready" {
+		return fmt.Errorf("UTM completed lease release requires its resolved claim snapshot; resolve the lease again")
+	}
+	// A partial acquisition may not have published a claim yet. Missing snapshot
+	// authority can authorize only continued absence, never adopt a later owner.
+	if !snapshotSet {
+		expected = core.LeaseClaim{}
+		exists = false
+	}
+	return b.releaseRecordWithAuthority(ctx, &r, req.CheckpointID, req.GuardedRemoteCleanup, releaseClaimAuthority{claim: expected, exists: exists})
 }
-func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID string, teardown func(context.Context, core.LeaseTarget)) error {
+
+var errCleanupActivity = errors.New("UTM lease activity renewed before cleanup")
+
+type releaseClaimAuthority struct {
+	claim  core.LeaseClaim
+	exists bool
+}
+
+// Cleanup and acquisition rollback intentionally acquire fresh local authority.
+// Public ReleaseLease instead passes the immutable snapshot carried by its target.
+func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID string, teardown func(context.Context, core.LeaseTarget), cleanupOnly ...bool) error {
+	claim, exists, err := core.ReadLeaseClaimWithPresence(r.LeaseID)
+	if err != nil {
+		return err
+	}
+	return b.releaseRecordWithAuthority(ctx, r, checkpointID, teardown, releaseClaimAuthority{claim: claim, exists: exists}, cleanupOnly...)
+}
+
+func (b *backend) releaseRecordWithAuthority(ctx context.Context, r *record, checkpointID string, teardown func(context.Context, core.LeaseTarget), authority releaseClaimAuthority, cleanupOnly ...bool) error {
 	vms, err := b.inventory(ctx)
 	if err != nil {
 		return err
@@ -37,12 +66,9 @@ func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID str
 			return err
 		}
 	}
-	claim, exists, err := core.ReadLeaseClaimWithPresence(r.LeaseID)
-	if err != nil {
-		return err
-	}
+	claim, exists := authority.claim, authority.exists
 	if exists {
-		if claim.Provider != "utm" || claim.CloudID != r.VMID || claim.ProviderScope != (Provider{}).ClaimScope(b.cfg) {
+		if claim.LeaseID != r.LeaseID || claim.Slug != r.Slug || claim.Provider != "utm" || claim.CloudID != r.VMID || claim.ProviderScope != (Provider{}).ClaimScope(b.cfg) {
 			return fmt.Errorf("UTM release claim identity mismatch")
 		}
 		if err = core.AuthorizeCheckpointRelease(claim, checkpointID); err != nil {
@@ -55,6 +81,15 @@ func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID str
 		current, err := b.inventory(ctx)
 		if err != nil {
 			return err
+		}
+		if len(cleanupOnly) > 0 && cleanupOnly[0] {
+			eligible, _, checkErr := b.cleanupEligible(*r, b.project(*r, current))
+			if checkErr != nil {
+				return checkErr
+			}
+			if !eligible {
+				return errCleanupActivity
+			}
 		}
 		v, present := findVM(current, r.VMID)
 		if present {
@@ -106,6 +141,16 @@ func (b *backend) releaseRecord(ctx context.Context, r *record, checkpointID str
 	if err := b.removeGeneratedKey(*r); err != nil {
 		return err
 	}
+	unlockActivity, err := lockActivity(ctx, r.LeaseID)
+	if err != nil {
+		return err
+	}
+	defer unlockActivity()
+	if path, pathErr := activityPath(r.LeaseID); pathErr == nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
+		}
+	}
 	return removeRecord(r.LeaseID)
 }
 func (b *backend) waitObservation(ctx context.Context, id string, absent bool) error {
@@ -147,10 +192,10 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 	var failures []error
 	for _, r := range records {
 		s := b.project(r, vms)
-		eligible, reason := core.ShouldCleanupServer(s, core.ClockNow(b.rt.Clock).UTC())
-		if r.State != "ready" && !r.Keep {
-			eligible = true
-			reason = "incomplete allocation"
+		eligible, reason, checkErr := b.cleanupEligible(r, s)
+		if checkErr != nil {
+			failures = append(failures, checkErr)
+			continue
 		}
 		if !eligible {
 			fmt.Fprintf(b.rt.Stderr, "skip UTM lease=%s reason=%s\n", r.LeaseID, reason)
@@ -160,7 +205,11 @@ func (b *backend) Cleanup(ctx context.Context, req core.CleanupRequest) error {
 			fmt.Fprintf(b.rt.Stdout, "would remove UTM lease=%s vm=%s reason=%s\n", r.LeaseID, core.Blank(r.VMID, "unresolved"), reason)
 			continue
 		}
-		if err = b.releaseRecord(ctx, &r, "", nil); err != nil {
+		if err = b.releaseRecord(ctx, &r, "", nil, true); err != nil {
+			if errors.Is(err, errCleanupActivity) {
+				fmt.Fprintf(b.rt.Stderr, "skip UTM lease=%s reason=renewed activity\n", r.LeaseID)
+				continue
+			}
 			failures = append(failures, fmt.Errorf("UTM lease=%s: %w", r.LeaseID, err))
 			continue
 		}

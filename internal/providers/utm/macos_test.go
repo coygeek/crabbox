@@ -402,3 +402,44 @@ func TestMacOSJournalModeAndPhaseValidationPreservesLegacy(t *testing.T) {
 		t.Fatal("legacy template journal rejected")
 	}
 }
+
+func TestMacOSClaimFencedExecRefreshesOnlyLocalTarget(t *testing.T) {
+	b, f := setupMacOS(t)
+	lease, err := b.Acquire(context.Background(), core.AcquireRequest{Keep: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := b.lookup(lease.LeaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := recordPath(r.LeaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.address = "192.168.64.11"
+	target, err := b.macOSExecLeaseTarget(context.Background(), r, f.base.vms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.SSH.Host != f.address || target.SSH.SSHHostKey != r.SSHHostKey || target.LeaseID != r.LeaseID {
+		t.Fatal("exec lost refreshed guest identity")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(original) {
+		t.Fatal("claim-fenced exec rewrote ownership journal")
+	}
+	f.address = ""
+	if _, err = b.macOSExecLeaseTarget(context.Background(), r, f.base.vms); err == nil {
+		t.Fatal("exec reused stale address after ARP discovery failed")
+	}
+	f.address = "192.168.64.11"
+	f.base.vms[len(f.base.vms)-1].Configuration.Notes = "changed"
+	if _, err = b.macOSExecLeaseTarget(context.Background(), r, f.base.vms); err == nil {
+		t.Fatal("exec accepted changed guest ownership")
+	}
+}

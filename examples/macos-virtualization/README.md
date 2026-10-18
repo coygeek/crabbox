@@ -283,8 +283,18 @@ See [the result record](RESULTS.md) for the current observed acceptance status.
 python3 -m unittest discover -s examples/macos-virtualization -p 'test_*.py'
 ```
 
+CI runs this command in both the ordinary `scripts` job on Linux and the existing
+`apple-vm` job on macOS, using the latest Python 3.12 patch. Linux discovers all
+checks and explicitly skips the native Swift case. On macOS that same case
+compiles `UTMProofController.swift` with `-DPROOF_IDENTITY_TESTS` and
+`test_identity.swift`, then executes the pure identity and guest-result contract
+suite. It needs the macOS SDK through `xcrun swiftc`; it does not need a UTM app,
+a guest image or nested virtualization. The native suite runs once through the
+unittest command above.
+
 These focused checks exercise stale output rejection, dependency extraction safety,
 backend/fixture constraints, fresh challenge validation and bounded subprocess
-failure handling. On macOS they also compile and run the native identity guard
-against supplied process records, without inspecting or controlling live apps. They do not compile UTM, grant Automation permissions or boot a
-VM. Run the actual build and boot commands to establish those outcomes.
+failure handling. The native case covers PID/path/launch-time identity and typed
+scripting-result decoding using supplied records, without inspecting or controlling
+live apps. These checks do not compile UTM, grant Automation permissions or boot
+a VM. Run the actual build and boot commands to establish those outcomes.

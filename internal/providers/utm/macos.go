@@ -61,7 +61,7 @@ func (b *backend) validateOwnedMacOS(ctx context.Context, r record, vms []vm, st
 func macOSReadyCheck(r record) string {
 	// The first NIC's address is only a host-side hint until this authenticated
 	// check proves the guest's own platform and assigned NIC identity.
-	return fmt.Sprintf(`test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64 && (test "$(/usr/bin/sw_vers -productVersion)" = %s || test "$(/usr/bin/sw_vers -productVersion)" = %s) && test "$(/usr/bin/sw_vers -buildVersion)" = %s && command -v bash >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null && /sbin/ifconfig -a | /usr/bin/awk -v wanted=%s '$1 == "ether" && tolower($2) == wanted { found=1 } END { exit !found }'`, core.ShellQuote(r.ImageVersion), core.ShellQuote(strings.TrimSuffix(r.ImageVersion, ".0")), core.ShellQuote(r.ImageBuild), core.ShellQuote(strings.ToLower(r.MAC)))
+	return fmt.Sprintf(`test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64 && (test "$(/usr/bin/sw_vers -productVersion)" = %s || test "$(/usr/bin/sw_vers -productVersion)" = %s) && test "$(/usr/bin/sw_vers -buildVersion)" = %s && command -v bash >/dev/null && command -v rsync >/dev/null && command -v tar >/dev/null && command -v perl >/dev/null && perl -e 'exit 0' && /sbin/ifconfig -a | /usr/bin/awk -v wanted=%s '$1 == "ether" && tolower($2) == wanted { found=1 } END { exit !found }'`, core.ShellQuote(r.ImageVersion), core.ShellQuote(strings.TrimSuffix(r.ImageVersion, ".0")), core.ShellQuote(r.ImageBuild), core.ShellQuote(strings.ToLower(r.MAC)))
 }
 func (b *backend) createMacOS(ctx context.Context, r record, image macOSImage) error {
 	script := fmt.Sprintf(`tell application %s
@@ -421,4 +421,29 @@ func (b *backend) removeGeneratedKey(r record) error {
 		return err
 	}
 	return nil
+}
+
+// Claim-fenced exec already holds the shared core claim fence. Resolve only
+// observations here: taking the host lock, saving the journal, or rewriting the
+// core claim would invert release's host-lock -> exclusive-claim-fence order.
+func (b *backend) macOSExecLeaseTarget(ctx context.Context, r record, vms []vm) (core.LeaseTarget, error) {
+	if !r.isMacOS() || r.State != "ready" || !r.SSHReady || !r.AccountComplete {
+		return core.LeaseTarget{}, fmt.Errorf("UTM macOS exec requires a completed ready lease")
+	}
+	v, ok := findVM(vms, r.VMID)
+	if !ok || v.Status != "started" {
+		return core.LeaseTarget{}, fmt.Errorf("UTM macOS exec guest is absent or not running")
+	}
+	if err := b.validateOwnedMacOS(ctx, r, vms, false); err != nil {
+		return core.LeaseTarget{}, err
+	}
+	address, err := b.queryMacOSAddress(ctx, r)
+	if err != nil {
+		return core.LeaseTarget{}, err
+	}
+	if address == "" {
+		return core.LeaseTarget{}, fmt.Errorf("UTM macOS exec guest IPv4 ARP address is unavailable; retry after guest networking is ready")
+	}
+	r.Address = address
+	return b.target(r, vms), nil
 }

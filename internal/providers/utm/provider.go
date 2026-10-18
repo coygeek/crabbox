@@ -1,4 +1,4 @@
-// Package utm manages disposable clones of prepared local UTM QEMU guests.
+// Package utm manages owned local UTM Linux and macOS guest leases.
 package utm
 
 import (
@@ -18,7 +18,7 @@ type Provider struct{}
 func (Provider) Spec() core.ProviderSpec {
 	return core.ProviderSpec{Name: "utm", Family: "utm", Kind: core.ProviderKindSSHLease,
 		Authentication: core.DirectProviderAuthentication(core.ProviderAuthenticationLocalContext),
-		Targets:        []core.TargetSpec{{OS: core.TargetLinux}, {OS: core.TargetMacOS}}, Features: core.FeatureSet{core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup}, Coordinator: core.CoordinatorNever, ClassDisposition: core.ProviderClassDispositionUnmapped, ActionsRunnerUnsupported: true}
+		Targets:        []core.TargetSpec{{OS: core.TargetLinux}, {OS: core.TargetMacOS}}, Features: core.FeatureSet{core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup, core.FeatureCheckpoint, core.FeatureRestore, core.FeatureClaimExec}, Coordinator: core.CoordinatorNever, ClassDisposition: core.ProviderClassDispositionUnmapped, ActionsRunnerUnsupported: true}
 }
 func (Provider) RegisterFlags(fs *flag.FlagSet, cfg core.Config) any {
 	return core.RegisterUTMConfigFlags(fs, cfg.UTM)

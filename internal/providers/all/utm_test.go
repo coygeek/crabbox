@@ -27,8 +27,45 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Spec().Kind != core.ProviderKindSSHLease || !p.Spec().Features.Has(core.FeatureCrabboxSync) || p.Spec().Features.Has(core.FeatureDesktop) || p.Spec().Features.Has(core.FeatureCheckpoint) {
-		t.Fatalf("inaccurate UTM capabilities: %#v", p.Spec())
+	spec := p.Spec()
+	if spec.Kind != core.ProviderKindSSHLease || spec.Coordinator != core.CoordinatorNever {
+		t.Fatalf("UTM must remain a direct SSH lease provider: %#v", spec)
+	}
+	for _, feature := range []core.Feature{core.FeatureSSH, core.FeatureCrabboxSync, core.FeatureCleanup, core.FeatureCheckpoint, core.FeatureRestore, core.FeatureClaimExec} {
+		if !spec.Features.Has(feature) {
+			t.Errorf("UTM is missing accepted capability %s: %#v", feature, spec)
+		}
+	}
+	for _, feature := range []core.Feature{core.FeatureDesktop, core.FeatureBrowser, core.FeatureCode, core.FeatureFork} {
+		if spec.Features.Has(feature) {
+			t.Errorf("UTM advertises unsupported capability %s: %#v", feature, spec)
+		}
+	}
+	targets := map[string]bool{}
+	for _, target := range spec.Targets {
+		if target.WindowsMode != "" || targets[target.OS] {
+			t.Fatalf("unexpected or duplicate UTM target: %#v", spec.Targets)
+		}
+		targets[target.OS] = true
+	}
+	if len(targets) != 2 || !targets[core.TargetLinux] || !targets[core.TargetMacOS] {
+		t.Fatalf("UTM must advertise prepared Linux and IPSW macOS targets: %#v", spec.Targets)
+	}
+	if _, ok := p.(core.NativeCheckpointLifecycleProvider); !ok {
+		t.Fatal("UTM checkpoint capability lacks native capture/verify/delete lifecycle")
+	}
+	if _, ok := p.(core.NativeCheckpointRestoreProvider); !ok {
+		t.Fatal("UTM restore capability lacks native in-place restoration")
+	}
+	checkpoint, ok := p.(core.NativeCheckpointProvider)
+	if !ok {
+		t.Fatal("UTM checkpoint capability lacks native admission policy")
+	}
+	if _, supported := checkpoint.NativeCheckpointCapability(core.NativeCheckpointRequest{Strategy: core.CheckpointStrategyDiskSnapshot}); !supported {
+		t.Fatal("UTM must admit native disk snapshots")
+	}
+	if _, supported := checkpoint.NativeCheckpointCapability(core.NativeCheckpointRequest{Strategy: core.CheckpointStrategyImage}); supported {
+		t.Fatal("UTM must not admit native image/fork strategy")
 	}
 	cfg, err := core.LoadConfig()
 	if err != nil {
@@ -43,6 +80,9 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 	}
 	if _, ok := configured.(core.SSHLeaseBackend); !ok {
 		t.Fatal("UTM must route run/sync through the core SSH lease backend")
+	}
+	if _, ok := configured.(core.ExecLeaseClaimResolver); !ok {
+		t.Fatal("UTM claim-exec capability lacks a claim-fenced SSH resolver")
 	}
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	values := p.RegisterFlags(fs, cfg)
@@ -64,10 +104,78 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 			t.Fatalf("UTM absent from discovery/config: %s", out.String())
 		}
 	}
-	for _, target := range []string{core.TargetMacOS, core.TargetWindows} {
-		cfg.TargetOS = target
-		if _, err = p.Configure(cfg, core.Runtime{}); err == nil {
-			t.Fatalf("unsupported UTM target %s accepted", target)
+	// Template acquisition remains Linux-only; macOS is admitted separately for
+	// IPSW acquisition. Configuration checks must not call UTM or start a VM.
+	for _, scenario := range []struct {
+		name, acquisition, target string
+	}{
+		{"template-macos", "template", core.TargetMacOS},
+		{"template-windows", "template", core.TargetWindows},
+		{"ipsw-linux", "ipsw", core.TargetLinux},
+		{"ipsw-windows", "ipsw", core.TargetWindows},
+		{"unknown-acquisition", "unsupported", core.TargetLinux},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			candidate := cfg
+			candidate.UTM.Acquisition = scenario.acquisition
+			candidate.TargetOS = scenario.target
+			if _, err := p.Configure(candidate, core.Runtime{}); err == nil {
+				t.Fatalf("unsupported UTM acquisition=%s target=%s accepted", scenario.acquisition, scenario.target)
+			}
+		})
+	}
+	architecture, ok := p.(core.ProviderArchitectureCapability)
+	if !ok {
+		t.Fatal("UTM must supply explicit target/architecture admission")
+	}
+	for _, target := range []string{core.TargetLinux, core.TargetMacOS} {
+		candidate := cfg
+		candidate.TargetOS = target
+		candidate.UTM.Acquisition = "template"
+		if target == core.TargetMacOS {
+			candidate.UTM.Acquisition = "ipsw"
+			candidate.UTM.Template = ""
 		}
+		if !architecture.SupportsArchitecture(candidate, "arm64") {
+			t.Errorf("UTM target=%s must admit ARM64", target)
+		}
+		for _, arch := range []string{"amd64", "unsupported"} {
+			if architecture.SupportsArchitecture(candidate, arch) {
+				t.Errorf("unsupported UTM target=%s architecture=%s accepted", target, arch)
+			}
+		}
+	}
+	windows := cfg
+	windows.TargetOS = core.TargetWindows
+	if architecture.SupportsArchitecture(windows, "arm64") {
+		t.Fatal("UTM must not admit Windows even with ARM64")
+	}
+
+	macOS := cfg
+	macOS.TargetOS = core.TargetMacOS
+	macOS.UTM.Template = ""
+	macOS.UTM.SSHKey = ""
+	macOS.SSHKey = ""
+	macFlags := flag.NewFlagSet("ipsw", flag.ContinueOnError)
+	macValues := p.RegisterFlags(macFlags, macOS)
+	image := filepath.Join(t.TempDir(), "restore.ipsw")
+	if err := macFlags.Parse([]string{"--utm-acquisition=ipsw", "--utm-ipsw=" + image, "--utm-install-timeout=30m"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ApplyFlags(&macOS, macFlags, macValues); err != nil {
+		t.Fatal(err)
+	}
+	if macOS.UTM.Acquisition != "ipsw" || macOS.UTM.IPSW != image || macOS.UTM.InstallTimeout.String() != "30m0s" {
+		t.Fatalf("typed macOS IPSW flags not applied: %#v", macOS.UTM)
+	}
+	macBackend, err := p.Configure(macOS, core.Runtime{})
+	if err != nil {
+		t.Fatalf("supported macOS IPSW configuration refused: %v", err)
+	}
+	if _, ok := macBackend.(core.SSHLeaseBackend); !ok {
+		t.Fatal("macOS IPSW must route continuing run/sync through SSH leases")
+	}
+	if _, ok := macBackend.(core.ExecLeaseClaimResolver); !ok {
+		t.Fatal("macOS IPSW must supply continuing claim-fenced SSH execution")
 	}
 }

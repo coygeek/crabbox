@@ -30,7 +30,7 @@ networking are not host-routable, so Crabbox allocates an explicit loopback port
 forward. The prepared-template path supports QEMU Linux ARM64 only. Shared
 networking is used by the separate fresh-macOS path below. Bridged networking,
 x86 guests, native Windows and desktop/browser/code capabilities are unsupported.
-This acquisition feature does not add native checkpoints.
+Native checkpoints use the stopped-state contract below.
 
 ## Configuration
 
@@ -67,13 +67,23 @@ crabbox providers describe utm --json
 crabbox config show --provider utm
 crabbox doctor --provider utm
 crabbox run --provider utm --keep -- sh -c 'git diff; mkdir -p artifacts; uname -a > artifacts/guest.txt'
+crabbox exec --check --provider utm
+crabbox exec --provider utm --id LEASE_ID -- uname -a </dev/null
 crabbox ssh --provider utm LEASE_ID
 crabbox stop --provider utm LEASE_ID
 ```
 
 Normal `crabbox run` syncs the local checkout, including local edits, and uses the
 configured results patterns to retrieve artifacts. `--keep` retains the clone
-for subsequent commands using its lease ID or slug. Display-name changes in UTM
+for subsequent commands using its lease ID or slug. `exec` requires the repository that owns the exact completed lease claim and
+holds core's shared claim fence through private SSH execution and cleanup.
+Release and checkpoint writers wait for that fence; incomplete, mismatched or
+checkpoint-held leases fail before execution. Provider-owned idle activity uses
+a separate local sidecar, so concurrent commands never need an exclusive claim
+write and do not extend the original maximum lease lifetime. `ssh`, `connect`
+and `run --shell` retain their existing SSH resolution/run paths.
+
+Display-name changes in UTM
 do not change the recorded UUID or SSH port.
 
 ## Identity and recovery
@@ -167,7 +177,10 @@ utm:
 Omit `utm.template`. No prepared-template SSH key or password is required for
 this mode. `/tmp/crabbox` is the shared default work root on both guest platforms;
 an explicit `utm.workRoot` remains effective. The guest needs its stock `bash`,
-`rsync`, `tar`, `sw_vers` and `ifconfig` tools.
+`rsync`, `tar`, `perl`, `sw_vers` and `ifconfig` tools. Readiness executes a
+small Perl probe: the stock Python command can be an Apple developer-tool shim
+without Command Line Tools. Sync selects working stock Perl on Darwin and does
+not install guest developer tools or retry a failed deletion interpreter.
 
 Crabbox generates a fresh random account password in memory, validates it and
 the account with Apple's SDK before creating a VM, and sends it to the native
@@ -221,3 +234,74 @@ files. The IPSW and unrelated VMs remain outside the destructive scope. A lost
 initial account password is not recovered or persisted; continuing access uses
 the lease's private key. If acquisition never reaches continuing SSH readiness,
 release the incomplete lease and acquire a new VM.
+
+## Native checkpoints
+
+UTM 5.0.8 or later can save and restore native state of an owned retained lease.
+Capture and restore require the exact VM to be **stopped**. Shut down the guest
+gracefully through its SSH session or UTM's guest shutdown request, wait for UTM
+to report stopped, then retry. Crabbox does not force-stop a running guest to
+capture it. A disk-only snapshot is never loaded into a running QEMU VM.
+
+```sh
+crabbox checkpoint create --provider utm --id LEASE_ID --mode native --json
+crabbox checkpoint inspect CHECKPOINT_ID --verify --json
+crabbox checkpoint restore CHECKPOINT_ID --provider utm --id LEASE_ID
+crabbox checkpoint delete CHECKPOINT_ID
+```
+
+Restore replaces the original lease's native state, then explicitly starts or
+resumes that VM and reconnects through its verified SSH transport. It does not
+clone the template, reinstall credentials, or sync the current source checkout.
+The guest MAC and platform/tool readiness checks still apply. Save a guest marker
+before capture and check it afterward when validating a workload rollback.
+
+These snapshots are **lease-bound**: their data lives inside the owned `.utm`
+bundle. Releasing or cleaning up the lease deletes its native snapshots too.
+Keep the lease until its checkpoints are no longer needed. `--retire-source` is
+refused because deletion would destroy the captured state. Checkpoint fork,
+cross-host migration and portable backups are unsupported.
+
+The provider records the exact public snapshot UUID, VM UUID, backend, storage
+scope, capture state and whether UTM included running state. A stopped suspended
+VM may include running state; the provider records UTM's actual result rather
+than assuming that every stopped snapshot is disk-only. QEMU stopped snapshots
+require qcow2 images. Eligible writable internal disks and applicable firmware
+files are included. External, read-only and non-disk drives are listed as
+excluded in the receipt; host shares remain outside the snapshot. This is not
+a backup of those resources. A VM with no eligible disk is refused.
+
+Inspection with `--verify` requires the guest stopped to check every participating
+image through UTM. Missing or incomplete data, changed disk membership, a changed
+backend, an overwritten snapshot or changed ownership prevents restoration.
+Only the recorded snapshot UUID can be deleted; failed deletion retains its
+receipt for retry. Capture persists a pending receipt before submission and
+keeps a returned snapshot UUID through cancellation or failed readback. A pending
+receipt is not a verified checkpoint and cannot be restored. If no UUID was
+returned or recovered, retain the receipt and inspect UTM before reconciling it;
+Crabbox does not delete a snapshot by its display name.
+
+Apple snapshot operations require macOS 27 or later and an underlying managed
+Apple lease supported by the provider. Apple capture/restore remain stopped-only;
+fresh Apple acquisition uses the IPSW mode above. Disposable
+execution and unavailable native image tooling are refused by UTM's snapshot
+service before capture.
+
+
+## UTM release limitations
+
+The control path checks scripting errors and reads back the operation's state.
+It does not treat `utmctl` exit status alone as success: the existing
+[UTM CLI error-status report](https://github.com/utmapp/UTM/issues/7933) includes
+5.0.8 evidence. CLI availability checks do not establish application control or
+guest readiness.
+
+Execution uses authenticated SSH. It does not depend on `utmctl attach`, whose
+[interactive-help mismatch](https://github.com/utmapp/UTM/issues/7987) remains a
+separate upstream console issue. Starts and stops have bounded deadlines; failed
+readiness or unconfirmed shutdown retains recovery information and never permits
+unconfirmed deletion. The supplied
+[graphical QEMU starting-state incident](https://github.com/utmapp/UTM/issues/7988)
+was not reproduced by this provider's acceptance tests. A successful non-graphics
+baseline establishes neither its cause nor a graphical workaround. Crabbox does
+not restart the shared UTM app to recover a lease.

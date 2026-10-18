@@ -1,6 +1,7 @@
 package utm
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -126,21 +127,62 @@ func TestPasswordBootstrapCancellationClosesHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	started := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		conn, e := listener.Accept()
-		if e != nil {
+		conn, err := listener.Accept()
+		if err != nil {
+			started <- err
 			return
 		}
 		defer conn.Close()
-		io.Copy(io.Discard, conn)
+		accepted <- conn
+		reader := bufio.NewReader(conn)
+		_, err = reader.ReadString('\n')
+		started <- err
+		if err == nil {
+			_, _ = io.Copy(io.Discard, reader)
+		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Exercise caller cancellation while SSH is waiting for the server banner.
+	// A shared socket/context deadline can expire in the network poller before
+	// the context timer publishes Err(), so wall-clock ordering cannot prove it.
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	_, _, err = bootstrapMacOSAttempt(ctx, record{Address: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, User: "fixture"}, "fixture-only", "fixture-public")
-	if err == nil || ctx.Err() == nil {
-		t.Fatal("canceled handshake accepted")
+	type outcome struct {
+		key           string
+		authenticated bool
+		err           error
+	}
+	returned := make(chan outcome, 1)
+	go func() {
+		key, authenticated, err := bootstrapMacOSAttempt(ctx, record{Address: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, User: "fixture"}, "fixture-only", "fixture-public")
+		returned <- outcome{key, authenticated, err}
+	}()
+	select {
+	case conn := <-accepted:
+		defer conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("SSH connection was not accepted")
+	}
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("client SSH preamble failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SSH handshake did not start")
+	}
+	cancel()
+	select {
+	case result := <-returned:
+		if result.err == nil || result.authenticated || result.key != "" || ctx.Err() != context.Canceled {
+			t.Fatalf("canceled handshake accepted: error=%v authenticated=%t host-key-present=%t context-error=%v", result.err, result.authenticated, result.key != "", ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled SSH handshake did not return")
 	}
 	select {
 	case <-done:

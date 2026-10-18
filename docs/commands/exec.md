@@ -38,7 +38,7 @@ do not prove credentials, connectivity, capacity, or an existing lease's state.
 
 Direct Daytona initially supports both capabilities for completed fixed-ID leases
 through its existing native activity renewal and fixed-lease release fence.
-UTM also supports claim-fenced execution on completed, owned Linux SSH leases.
+UTM also supports claim-fenced execution on completed, owned Linux or macOS SSH leases.
 Its existing lease IDs are not caller-supplied fixed IDs, so `exec --check --provider utm` reports `execution:true` and `currentRepoStop:false`.
 
 Ordinary Daytona leases and incomplete fixed acquisitions are rejected before

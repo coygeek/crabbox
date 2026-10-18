@@ -9,6 +9,7 @@ import (
 
 type fileUTMConfig struct {
 	AppPath        string `yaml:"appPath,omitempty"`
+	StorageRoot    string `yaml:"storageRoot,omitempty"`
 	Template       string `yaml:"template,omitempty"`
 	User           string `yaml:"user,omitempty"`
 	SSHKey         string `yaml:"sshKey,omitempty"`
@@ -43,13 +44,14 @@ func (cfg *UTMConfig) applyFile(file *fileUTMConfig) (UTMConfigApplied, error) {
 
 func (cfg *UTMConfig) applyEnv() (UTMConfigApplied, error) {
 	var applied UTMConfigApplied
-	err := applyConfigEnvironment(cfg, &applied, 0, 6)
+	err := applyConfigEnvironment(cfg, &applied, 0, 7)
 	return applied, err
 }
 
 // UTMConfigFlagValues holds parsed values; only visited flags are applied.
 type UTMConfigFlagValues struct {
 	AppPath        *string
+	StorageRoot    *string
 	Template       *string
 	User           *string
 	SSHKey         *string

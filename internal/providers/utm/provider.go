@@ -68,6 +68,10 @@ func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, err
 		c.AppPath = core.UTMConfigDefaultAppPath
 	}
 	c.AppPath = core.ExpandUserPath(c.AppPath)
+	c.StorageRoot = core.ExpandUserPath(c.StorageRoot)
+	if c.StorageRoot != "" && !filepath.IsAbs(c.StorageRoot) {
+		return nil, fmt.Errorf("utm.storageRoot must be an absolute local directory")
+	}
 	if !filepath.IsAbs(c.AppPath) || filepath.Ext(c.AppPath) != ".app" {
 		return nil, fmt.Errorf("utm.appPath must be an absolute .app bundle path")
 	}
@@ -100,6 +104,7 @@ func (Provider) ConfigShowSection(cfg core.Config) core.ProviderConfigShowSectio
 	c := cfg.UTM
 	return core.ProviderConfigShowSection{JSONKey: "utm", TextLabel: "utm", Providers: []string{"utm"}, Fields: []core.ProviderConfigShowField{
 		{JSONName: "appPath", JSONValue: c.AppPath, TextName: "app", TextValue: c.AppPath},
+		{JSONName: "storageRoot", JSONValue: c.StorageRoot, TextName: "storage_root", TextValue: c.StorageRoot},
 		{JSONName: "template", JSONValue: c.Template, TextName: "template", TextValue: c.Template},
 		{JSONName: "user", JSONValue: c.User, TextName: "user", TextValue: c.User},
 		{JSONName: "sshKey", JSONValue: c.SSHKey, TextName: "ssh_key", TextValue: c.SSHKey},

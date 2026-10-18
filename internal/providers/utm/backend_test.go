@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,15 +32,21 @@ type controlFixture struct {
 	cancelClone    func()
 	failInventory  bool
 	actions        []string
+	storageRoot    string
+	nativePlists   bool
+	failReload     bool
 }
 
 func preparedTemplate() vm {
 	return vm{ID: sourceUUID, Name: "prepared template", Status: "stopped", Backend: "qemu", Configuration: configuration{Architecture: "aarch64", Networks: []network{{Index: 0, Mode: "emulated", Address: "52:54:00:00:00:01"}}}}
 }
-func (f *controlFixture) Run(_ context.Context, req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+func (f *controlFixture) Run(ctx context.Context, req core.LocalCommandRequest) (core.LocalCommandResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, req)
+	if req.Name == "/usr/bin/plutil" {
+		return f.runPlutil(ctx, req)
+	}
 	out := func(s string) (core.LocalCommandResult, error) { return core.LocalCommandResult{Stdout: s}, nil }
 	if req.Name == "/usr/bin/osascript" {
 		if len(req.Args) > 1 && req.Args[0] == "-l" {
@@ -73,21 +78,24 @@ func (f *controlFixture) Run(_ context.Context, req core.LocalCommandRequest) (c
 			req.Args = []string{"stop", "--kill", id}
 		case strings.Contains(string(script), "delete targetVM"):
 			req.Args = []string{"delete", id}
-		default:
-			notes := field(`notes:"([^"]+)"`)
-			mac := field(`address:"([^"]+)"`)
-			port, _ := strconv.Atoi(field(`host port:([0-9]+)`))
-			if !strings.Contains(string(script), "index:0") || !strings.Contains(string(script), `host address:"127.0.0.1"`) || !strings.Contains(string(script), "guest port:22") {
-				panic("unsafe clone network update")
+		case strings.Contains(string(script), "reload configuration targetVM"):
+			if !strings.Contains(string(script), "if status of targetVM is not stopped") {
+				panic("reload lacks stopped guard")
+			}
+			if f.failReload {
+				return core.LocalCommandResult{}, errors.New("reload failed")
 			}
 			for i := range f.vms {
 				if f.vms[i].ID == id {
-					f.vms[i].Configuration.Notes = notes
-					f.vms[i].Configuration.Networks = []network{{Mode: "emulated", Address: mac, Forwards: []forward{{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: port, GuestPort: 22}}}}
+					if err := f.reloadBundle(ctx, &f.vms[i]); err != nil {
+						return core.LocalCommandResult{}, err
+					}
 					return out("")
 				}
 			}
-			return core.LocalCommandResult{}, errors.New("no vm")
+			return core.LocalCommandResult{}, errors.New("unknown reload UUID")
+		default:
+			panic("unexpected scripting mutation: " + string(script))
 		}
 	}
 	f.actions = append(f.actions, req.Args[0])
@@ -102,6 +110,9 @@ func (f *controlFixture) Run(_ context.Context, req core.LocalCommandRequest) (c
 		cloned := preparedTemplate()
 		cloned.ID = fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012d", f.next)
 		cloned.Name = req.Args[3]
+		if err := f.createBundle(cloned); err != nil {
+			return core.LocalCommandResult{}, err
+		}
 		f.vms = append(f.vms, cloned)
 		if f.cancelClone != nil {
 			f.cancelClone()
@@ -151,12 +162,13 @@ func setup(t *testing.T) (*backend, *controlFixture) {
 	cfg.TargetOS = core.TargetLinux
 	cfg.Architecture = "arm64"
 	cfg.UTM.Template = sourceUUID
+	cfg.UTM.StorageRoot = t.TempDir()
 	cfg.UTM.StartupTimeout = time.Second
 	cfg.UTM.SSHKey = filepath.Join(t.TempDir(), "guest-key")
 	if err := os.WriteFile(cfg.UTM.SSHKey, []byte("test credential placeholder"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	control := &controlFixture{vms: []vm{preparedTemplate(), {ID: otherUUID, Name: "unrelated", Status: "started", Backend: "apple"}}}
+	control := &controlFixture{storageRoot: cfg.UTM.StorageRoot, vms: []vm{preparedTemplate(), {ID: otherUUID, Name: "unrelated", Status: "started", Backend: "apple"}}}
 	configured, err := (Provider{}).Configure(cfg, core.Runtime{Exec: control, Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
 		t.Fatal(err)

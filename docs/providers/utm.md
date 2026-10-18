@@ -10,6 +10,9 @@ lease's destructive operations.
 - A local macOS host with UTM and its bundled `utmctl`. UTM's published scripting
   interface must be accessible from the process running Crabbox. macOS may ask
   for Automation permission to control UTM. Remote UTM hosts are unsupported.
+- Configure `utm.storageRoot` to the existing local directory where UTM creates
+  cloned `.utm` bundles. Crabbox locates only the exact recorded clone UUID there;
+  it does not infer a bundle from its display name or edit UTM registry files.
 - A stopped **QEMU Linux ARM64 (`aarch64`)** template registered in UTM. Select
   it by UUID from `utmctl list`, not its display name.
 - Exactly one **emulated** network adapter with DHCP enabled in the guest. Extra
@@ -36,6 +39,7 @@ target: linux
 architecture: arm64
 utm:
   appPath: /Applications/UTM.app
+  storageRoot: /path/to/utm-bundles
   template: 11111111-1111-4111-8111-111111111111
   user: crabbox
   sshKey: ~/.ssh/prepared-vm
@@ -48,6 +52,11 @@ selecting its actual UUID. `utm.sshKey` may fall back to the shared `sshKey`
 configuration. The provider does not install keys, change user preferences,
 install guest software, or mutate the template. Credentials are reused from the
 prepared template, so restrict access to its private key and guest services.
+
+`storageRoot` is required for acquisition and must point to UTM's actual clone
+store, which can differ from the location of an imported template. Choose the
+existing directory used by your UTM installation; do not create a separate empty
+store. The provider needs local read/write access to owned clone bundles.
 
 All fields have corresponding `--utm-*` flags (`appPath` uses `--utm-app`) and
 `CRABBOX_UTM_*` environment variables. Inspect the exact bindings with:
@@ -76,6 +85,17 @@ one newly created VM with the allocated name, records its UUID before boot, and
 uses only that UUID for subsequent operations. An ambiguous or absent discovery
 retains the journal and reports its lease ID.
 
+UTM 5.0.8 rejects nested port-forward records through its configuration update
+Apple event. Crabbox uses the documented external-bundle editing and `reload
+configuration` contract for this step. It requires the exact clone to remain
+stopped, locates one regular `.utm` bundle by its on-disk UUID, verifies its
+name/backend/architecture against live inventory, and records the bundle path.
+It edits a private temporary copy with macOS `plutil`, preserves unrelated plist
+values, checks that the original and live configuration did not change, atomically
+replaces `config.plist`, and reloads through UTM. Symlink bundles/configs, duplicate
+UUIDs, stale identity or concurrent configuration changes are rejected. Neither
+Python nor an additional plist library is required.
+
 Crabbox replaces the clone's NIC MAC and all its port forwards with one
 `127.0.0.1:PORT -> guest:22` TCP forward. It reads this configuration back before
 boot. Cross-process lifecycle locking and the recorded ports/MACs prevent
@@ -101,5 +121,6 @@ selected for deletion by name. Local lifecycle expiry needs a running Crabbox
 cleanup invocation; UTM does not enforce a remote destruction deadline.
 
 Doctor checks the CLI executable with `--help`, application inventory and stopped-template
-configuration. It creates or starts no VM. Guest OS, architecture, authentication,
+configuration, plus access to the configured clone storage directory. It creates
+or starts no VM. Guest OS, architecture, authentication,
 tools and intended clone identity are verified only after acquisition.

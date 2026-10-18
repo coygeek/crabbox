@@ -84,6 +84,8 @@ func (b *backend) control(ctx context.Context, action, id string, name ...string
 		operation = "stop targetVM by kill"
 	case "delete":
 		operation = "delete targetVM"
+	case "reload":
+		operation = "if status of targetVM is not stopped then error \"UTM clone must be stopped\"\n reload configuration targetVM"
 	default:
 		return fmt.Errorf("unsupported UTM lifecycle action %q", action)
 	}
@@ -111,14 +113,6 @@ func (b *backend) inventory(ctx context.Context) ([]vm, error) {
 }
 func scriptString(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`).Replace(s) + `"`
-}
-func (b *backend) configureClone(ctx context.Context, r *record) error {
-	script := fmt.Sprintf(`tell application %s
- set targetVM to first virtual machine whose id is %s
- update configuration targetVM with {notes:%s, network interfaces:{{index:0, address:%s, port forwards:{{protocol:tcp, host address:"127.0.0.1", host port:%d, guest port:22}}}}}
-end tell`, scriptString(b.cfg.UTM.AppPath), scriptString(r.VMID), scriptString(r.marker()), scriptString(r.MAC), r.Port)
-	_, err := b.command(ctx, "/usr/bin/osascript", []string{"-"}, strings.NewReader(script))
-	return err
 }
 func findVM(vms []vm, id string) (vm, bool) {
 	for _, v := range vms {
@@ -158,7 +152,7 @@ func validateClone(v vm, r record) error {
 		return fmt.Errorf("UTM clone network identity changed")
 	}
 	f := n.Forwards[0]
-	if f.Protocol != "tcp" || f.HostAddress != "127.0.0.1" || f.HostPort != r.Port || f.GuestPort != 22 {
+	if !strings.EqualFold(f.Protocol, "TCP") || f.HostAddress != "127.0.0.1" || f.HostPort != r.Port || f.GuestPort != 22 {
 		return fmt.Errorf("UTM clone loopback SSH mapping changed")
 	}
 	return nil

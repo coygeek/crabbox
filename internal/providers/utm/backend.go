@@ -27,6 +27,9 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (lease c
 	if req.RequestedLeaseID != "" {
 		return lease, fmt.Errorf("provider=utm does not support caller-supplied lease IDs")
 	}
+	if _, err := b.storageRoot(); err != nil {
+		return lease, err
+	}
 	if !validUUID(b.cfg.UTM.Template) {
 		return lease, fmt.Errorf("utm.template must be the UUID of a stopped prepared Linux QEMU template")
 	}

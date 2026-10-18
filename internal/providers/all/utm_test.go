@@ -18,7 +18,7 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 	testutil.IsolateUserDirs(t)
 	t.Chdir(t.TempDir())
 	config := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(config, []byte("provider: utm\nutm:\n  template: 11111111-1111-4111-8111-111111111111\n  user: prepared\n  sshKey: /tmp/prepared-key\n  startupTimeout: 3m\n"), 0600); err != nil {
+	if err := os.WriteFile(config, []byte("provider: utm\nutm:\n  template: 11111111-1111-4111-8111-111111111111\n  user: prepared\n  sshKey: /tmp/prepared-key\n  storageRoot: /tmp/utm-bundles\n  startupTimeout: 3m\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("CRABBOX_CONFIG", config)
@@ -34,7 +34,7 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.UTM.User != "from-environment" || cfg.UTM.StartupTimeout.String() != "3m0s" || cfg.Architecture != "arm64" {
+	if cfg.UTM.User != "from-environment" || cfg.UTM.StartupTimeout.String() != "3m0s" || cfg.Architecture != "arm64" || cfg.UTM.StorageRoot != "/tmp/utm-bundles" {
 		t.Fatalf("typed UTM configuration not loaded: %#v arch=%s", cfg.UTM, cfg.Architecture)
 	}
 	configured, err := p.Configure(cfg, core.Runtime{})

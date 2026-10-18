@@ -33,6 +33,7 @@ type record struct {
 	OwnedName    string            `json:"ownedName"`
 	Token        string            `json:"token"`
 	Before       []string          `json:"before,omitempty"`
+	BundlePath   string            `json:"bundlePath,omitempty"`
 	VMID         string            `json:"vmId,omitempty"`
 	Architecture string            `json:"architecture"`
 	MAC          string            `json:"mac"`

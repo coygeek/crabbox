@@ -184,6 +184,12 @@ func (b *backend) Doctor(ctx context.Context, _ core.DoctorRequest) (core.Doctor
 	} else {
 		add("template", "ok", "stopped QEMU template with one emulated NIC; guest OS and tools remain unverified until authenticated acquisition")
 	}
+	if root, storageErr := b.storageRoot(); storageErr != nil {
+		add("storage", "error", storageErr.Error())
+		result.Status = "error"
+	} else {
+		add("storage", "ok", "clone bundle directory is accessible: "+root+"; mutation=false")
+	}
 	add("guest-readiness", "unchecked", "acquisition must verify authorized SSH, Linux architecture, clone MAC, bash, rsync and tar; UTM running status or guest-agent IP alone is insufficient")
 	return result, nil
 }

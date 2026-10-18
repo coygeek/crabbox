@@ -8,6 +8,7 @@ import "time"
 // authorize SSH only; UTM control uses the local macOS application context.
 type UTMConfig struct {
 	AppPath        string        `config:"appPath" env:"CRABBOX_UTM_APP" flag:"utm-app" sources:"user,repo,env,flag" help:"local UTM application bundle" default:"/Applications/UTM.app" fileIgnoreEmpty:"true" fileStorage:"value"`
+	StorageRoot    string        `config:"storageRoot" env:"CRABBOX_UTM_STORAGE_ROOT" flag:"utm-storage-root" sources:"user,repo,env,flag" help:"local directory containing UTM cloned .utm bundles" fileIgnoreEmpty:"true" fileStorage:"value"`
 	Template       string        `config:"template" env:"CRABBOX_UTM_TEMPLATE" flag:"utm-template" sources:"user,repo,env,flag" help:"stopped Linux QEMU template UUID" fileIgnoreEmpty:"true" fileStorage:"value"`
 	User           string        `config:"user" env:"CRABBOX_UTM_USER" flag:"utm-user" sources:"user,repo,env,flag" help:"prepared guest SSH user" default:"crabbox" fileIgnoreEmpty:"true" fileStorage:"value"`
 	SSHKey         string        `config:"sshKey" env:"CRABBOX_UTM_SSH_KEY" flag:"utm-ssh-key" sources:"user,repo,env,flag" help:"private SSH key already authorized in the template" fileIgnoreEmpty:"true" fileStorage:"value"`

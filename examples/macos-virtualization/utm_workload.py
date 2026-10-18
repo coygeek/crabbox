@@ -466,6 +466,100 @@ def capture_backend(run, vm):
     return text
 
 
+def prepare_controller(run, built, prior):
+    source = built / "work/source"
+    protocol = source / "Scripting/UTMScripting.swift"
+    bridge = Path(__file__).with_name("UTMProofController.swift").resolve(strict=True)
+    require(
+        protocol.is_file(),
+        "Keep the successful build's source copy: its pinned UTM scripting protocol is required",
+    )
+    _, revision = run.command(
+        "controller-source-revision", ["git", "-C", source, "rev-parse", "HEAD"]
+    )
+    require(
+        revision.strip() == prior["sourceRevision"],
+        "Controller protocol source differs from built source revision",
+    )
+    run.command(
+        "controller-source-clean",
+        [
+            "git",
+            "-C",
+            source,
+            "diff",
+            "--exit-code",
+            "HEAD",
+            "--",
+            "Scripting/UTMScripting.swift",
+        ],
+    )
+    developer = prior.get("developerDirectory", "").replace("<home>", str(Path.home()))
+    require(
+        developer and Path(developer).is_dir(),
+        "The build's full Xcode directory is required to compile the PID-bound controller",
+    )
+    run.env["DEVELOPER_DIR"] = developer
+    controller = run.work / "utm-proof-controller"
+    run.command(
+        "controller-build",
+        [
+            "/usr/bin/xcrun",
+            "swiftc",
+            "-parse-as-library",
+            "-module-cache-path",
+            run.work / "swift-modules",
+            "-framework",
+            "AppKit",
+            "-framework",
+            "ScriptingBridge",
+            protocol,
+            bridge,
+            "-o",
+            controller,
+        ],
+        timeout=300,
+    )
+    require(controller.is_file(), "Swift compiler returned no proof controller")
+    run.result["controller"] = {
+        "transport": "ScriptingBridge exact PID",
+        "sourceSHA256": digest(bridge),
+        "protocolSHA256": digest(protocol),
+        "executableSHA256": digest(controller),
+    }
+    return controller
+
+
+def discover_controller(run, controller, app):
+    for attempt in range(20):
+        code, output = run.command(
+            "controller-discover-" + str(attempt),
+            [controller, app, "discover"],
+            timeout=5,
+            check=False,
+        )
+        if code == 0:
+            observed = json.loads(output)
+            require(
+                type(observed.get("pid")) is int
+                and observed["pid"] > 0
+                and type(observed.get("launchTime")) in (int, float),
+                "Controller returned an invalid process identity",
+            )
+            require(
+                Path(observed.get("executable", "")).resolve()
+                == (app / "Contents/MacOS/UTM").resolve(),
+                "Controller observed an executable outside the packaged built app",
+            )
+            run.result["controller"].update(observed)
+            run.flush()
+            return [controller, app, str(observed["pid"]), str(observed["launchTime"])]
+        time.sleep(1)
+    raise RuntimeError(
+        "Cannot bind exactly one built UTM process. Inspect controller-discover logs for wrong app paths or competing copies; no VM command was sent"
+    )
+
+
 def boot(run, args):
     run.platform()
     built = Path(args.build).resolve(strict=True)
@@ -541,11 +635,7 @@ def boot(run, args):
     config["QEMU"]["DebugLog"] = True
     with (vm / "config.plist").open("wb") as f:
         plistlib.dump(config, f)
-    ctl = app / "Contents/MacOS/utmctl"
-    require(
-        ctl.is_file(),
-        "Packaged app lacks its bundled utmctl; do not substitute an installed CLI",
-    )
+    controller = prepare_controller(run, built, prior)
     code, _ = run.command("existing-app", ["pgrep", "-x", "UTM"], check=False)
     require(
         code == 1,
@@ -560,12 +650,14 @@ def boot(run, args):
     start_attempted = False
     try:
         run.command("app-launch", ["open", "-n", "-a", app])
-        run.command("fixture-open", ["open", "-a", app, vm])
+        ctl = discover_controller(run, controller, app)
+        run.command("controller-identity", [*ctl, "identity"], timeout=5)
+        run.command("fixture-open", [*ctl, "open", vm])
         # The exact UUID must become visible; zero scripting exit alone is insufficient.
         for attempt in range(20):
             _, state = run.command(
                 "fixture-status-" + str(attempt),
-                [ctl, "status", ident],
+                [*ctl, "status", ident],
                 timeout=5,
                 check=False,
             )
@@ -575,10 +667,10 @@ def boot(run, args):
             time.sleep(1)
         require(
             registered,
-            "Task guest did not register as stopped. Check macOS Automation permissions in the logged-in GUI session; utmctl may be denied from SSH (-1743)",
+            "Task guest did not register as stopped in the PID-bound built app. Check the actual proof controller's macOS Automation permission and logged-in GUI context (-1743)",
         )
         start_attempted = True
-        run.command("guest-start", [ctl, "start", ident], timeout=60)
+        run.command("guest-start", [*ctl, "start", ident], timeout=60)
         nonce = run.result["runId"]
         expected = "CRABBOX_GUEST_READY:" + nonce
         deadline = time.monotonic() + args.timeout
@@ -588,7 +680,7 @@ def boot(run, args):
             code, text = run.command(
                 "guest-challenge-" + str(attempt),
                 [
-                    ctl,
+                    *ctl,
                     "exec",
                     ident,
                     "--cmd",
@@ -628,6 +720,7 @@ def boot(run, args):
                     launched_hvf == (args.backend == "qemu-hvf"),
                     "Observed launch accelerator differs from declared backend; inspect fresh debug.log",
                 )
+                run.command("controller-final-identity", [*ctl, "identity"], timeout=5)
                 run.result["runtime"] = "passed"
                 break
             attempt += 1
@@ -640,11 +733,11 @@ def boot(run, args):
         capture_backend(run, vm)
         if registered:
             if start_attempted:
-                run.command("guest-stop", [ctl, "stop", "--force", ident], check=False)
+                run.command("guest-stop", [*ctl, "stop", "--force", ident], check=False)
             for attempt in range(15):
                 _, state = run.command(
                     "cleanup-status-" + str(attempt),
-                    [ctl, "status", ident],
+                    [*ctl, "status", ident],
                     timeout=5,
                     check=False,
                 )
@@ -655,7 +748,7 @@ def boot(run, args):
                 state.strip() == "stopped",
                 "Cannot confirm task VM stopped; retain work/proof.utm and stop ONLY its recorded UUID manually",
             )
-            run.command("guest-delete", [ctl, "delete", ident])
+            run.command("guest-delete", [*ctl, "delete", ident])
             for _ in range(20):
                 if not vm.exists():
                     break

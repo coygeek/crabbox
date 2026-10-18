@@ -135,6 +135,37 @@ class WorkloadTests(unittest.TestCase):
             self.assertNotIn(str(Path.home()), output)
             self.assertIn("<user>:staff <home>/input", output)
 
+    @unittest.skipUnless(
+        sys.platform == "darwin", "Native Swift identity checks require macOS"
+    )
+    def test_native_pid_identity_guard_without_application_calls(self):
+        here = Path(__file__).parent
+        executable = self.root / "identity-checks"
+        subprocess.run(
+            [
+                "/usr/bin/xcrun",
+                "swiftc",
+                "-DPROOF_IDENTITY_TESTS",
+                "-parse-as-library",
+                "-module-cache-path",
+                self.root / "swift-modules",
+                "-framework",
+                "AppKit",
+                here / "UTMProofController.swift",
+                here / "test_identity.swift",
+                "-o",
+                executable,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        result = subprocess.run(
+            [executable], check=True, capture_output=True, text=True, timeout=10
+        )
+        self.assertIn("invalid process identities rejected", result.stdout)
+
     def fixture(self):
         template = self.root / "fixture.utm"
         (template / "Data").mkdir(parents=True)
@@ -215,7 +246,9 @@ class WorkloadTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, message):
                     workload.validate_vm(changed, backend)
 
-    def simulate_boot(self, response="fresh", accelerator="hvf", stopped=True):
+    def simulate_boot(
+        self, response="fresh", accelerator="hvf", stopped=True, identity="correct"
+    ):
         template, built, _ = self.fixture()
         original = (template / "config.plist").read_bytes()
         run = workload.Run(self.root / "proof", "boot")
@@ -236,6 +269,27 @@ class WorkloadTests(unittest.TestCase):
             calls.append((name, [str(x) for x in argv]))
             if name == "existing-app":
                 return 1, ""
+            if name.startswith("controller-discover"):
+                return (
+                    (1, "wrong app executable")
+                    if identity == "wrong"
+                    else (
+                        0,
+                        json.dumps(
+                            {
+                                "pid": 12345,
+                                "launchTime": 100.125,
+                                "executable": str(
+                                    built.resolve() / "work/UTM.app/Contents/MacOS/UTM"
+                                ),
+                            }
+                        ),
+                    )
+                )
+            if name == "controller-final-identity" and identity == "restarted":
+                raise RuntimeError("Built app PID or launch time changed")
+            if name.startswith("controller-"):
+                return 0, "verified"
             if name.startswith("fixture-status"):
                 return 0, "stopped\n"
             if name.startswith("guest-challenge"):
@@ -259,8 +313,18 @@ class WorkloadTests(unittest.TestCase):
             return 0, ""
 
         run.command = command
-        with patch("utm_workload.time.sleep"):
-            if response == "fresh" and accelerator == "hvf" and stopped:
+        controller = run.work / "utm-proof-controller"
+        with (
+            patch("utm_workload.time.sleep"),
+            patch("utm_workload.prepare_controller", return_value=controller),
+        ):
+            run.result["controller"] = {"transport": "ScriptingBridge exact PID"}
+            if (
+                response == "fresh"
+                and accelerator == "hvf"
+                and stopped
+                and identity == "correct"
+            ):
                 workload.boot(run, args)
                 self.assertEqual(run.result["runtime"], "passed")
                 self.assertFalse((run.work / "proof.utm").exists())
@@ -273,9 +337,9 @@ class WorkloadTests(unittest.TestCase):
         for name, argv in calls:
             if name in ("guest-start", "guest-stop", "guest-delete"):
                 self.assertIn(task_id, argv)
-                self.assertTrue(
-                    argv[0].startswith(str(built.resolve() / "work/UTM.app"))
-                )
+                self.assertEqual(argv[0], str(controller))
+                self.assertEqual(argv[1], str(built.resolve() / "work/UTM.app"))
+                self.assertEqual(argv[2:4], ["12345", "100.125"])
         return run, calls
 
     def test_self_contained_qcow2_guest_fixture_is_accepted(self):
@@ -308,6 +372,15 @@ class WorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "backing chains"):
             workload.boot(run, args)
         self.assertTrue(template.exists())
+
+    def test_installed_app_misrouting_cannot_start_any_guest(self):
+        run, calls = self.simulate_boot(identity="wrong")
+        self.assertFalse(any(name == "guest-start" for name, _ in calls))
+        self.assertNotEqual(run.result["runtime"], "passed")
+
+    def test_fresh_guest_signal_cannot_pass_after_app_identity_changes(self):
+        run, _ = self.simulate_boot(identity="restarted")
+        self.assertNotEqual(run.result["runtime"], "passed")
 
     def test_fresh_guest_challenge_and_backend_proof_preserve_fixture(self):
         self.simulate_boot()

@@ -28,6 +28,9 @@ Crabbox repository and outside collected evidence.
 Prefer the separate build and guest-agent lanes over a single shell command that
 reports success after `open`: the latter proves no guest execution. The guest
 agent binds the challenge to the fresh VM UUID without guessing an SSH address.
+A small native controller also binds every AppleEvent to the verified built app's
+PID, launch time and executable path. It never resolves a bundle identifier or URL
+to choose the recipient.
 The helper deliberately limits its automated baseline to Linux QEMU guests.
 Additional backend/graphics lanes must keep their own result, never inherit a
 pass from this one.
@@ -176,19 +179,36 @@ itself the backend proof below.
 ## Boot and challenge the guest
 
 Perform runtime setup in a logged-in macOS GUI session on the **same runner**.
+Keep the successful build's source copy and full Xcode selection: the helper
+compiles `UTMProofController.swift` against that exact source's generated
+`Scripting/UTMScripting.swift`. It leaves the packaged app unchanged and records
+controller source, protocol and executable hashes.
+
 Grant the actual controlling context permission to automate the built UTM app.
 A successful terminal permission check does not establish the SSH session's TCC
-permission. UTM's `utmctl` documents that it may not work from SSH sessions or
-before login; error `-1743` requires correcting the approved GUI launch context.
-Do not disable TCC or edit its database. Build-only remote execution remains useful
-when runtime Automation is unavailable.
+permission. Error `-1743` requires correcting the approved GUI launch context.
+The standalone controller may appear under its responsible application or without
+a friendly application name in a macOS prompt. Inspect the actual caller and
+recipient; do not infer approval from the packaged app's bundled CLI. Do not
+disable TCC or edit its database. Build-only remote execution remains useful when
+runtime Automation is unavailable.
 
 Before invoking the helper, inspect the existing UTM inventory. If any VM is
 running, preserve that session and use a separate runner/session. An idle installed
 UTM can be quit through normal app controls. The helper refuses an already running
-UTM process so a shared bundle identifier cannot route the proof into an installed
-personal app. It launches the **packaged built app** by its path and only uses that
-app's bundled `utmctl`; it never falls back to `/Applications/UTM.app`.
+UTM process before setup. It launches the **packaged built app** by its path,
+reads back the exact running executable path and launch time, and pins its PID.
+Every subsequent open, status, start, guest command and cleanup event uses
+`SBApplication(processIdentifier:)`. The bundled `utmctl` is deliberately unused:
+its URL-based ScriptingBridge lookup can launch another copy with the same bundle
+identifier, even when the CLI itself lives inside the built app.
+
+A second UTM copy, process exit, reused PID, changed launch time or changed
+executable path prevents a passing proof. Cleanup can still stop/delete the exact
+verified built process's task UUID if a competing copy appears, while retaining
+all PID/path/launch-time checks. It never sends cleanup to the competing app or
+relaunches a vanished process. If identity cannot be established, retain the task
+bundle and inspect the recorded process identity before manual recovery.
 
 ```sh
 python3 examples/macos-virtualization/utm_workload.py boot \
@@ -265,5 +285,6 @@ python3 -m unittest discover -s examples/macos-virtualization -p 'test_*.py'
 
 These focused checks exercise stale output rejection, dependency extraction safety,
 backend/fixture constraints, fresh challenge validation and bounded subprocess
-failure handling. They do not compile UTM, grant Automation permissions or boot a
+failure handling. On macOS they also compile and run the native identity guard
+against supplied process records, without inspecting or controlling live apps. They do not compile UTM, grant Automation permissions or boot a
 VM. Run the actual build and boot commands to establish those outcomes.

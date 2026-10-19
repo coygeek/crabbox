@@ -115,7 +115,7 @@ claim a released port before UTM starts; authenticated readiness also checks the
 new clone MAC over SSH, so a different guest fails acquisition. A running status
 or reachable port alone is insufficient.
 
-A failed or interrupted acquisition leaves its journal visible in `crabbox ls
+A failed or interrupted acquisition leaves its journal visible in `crabbox list
 --provider utm`. Release the exact lease with `crabbox stop --provider utm
 LEASE_ID`; `crabbox cleanup --provider utm` also retries incomplete allocations
 that were not retained with `--keep`, and ordinary expired-lease cleanup.
@@ -226,7 +226,7 @@ after acquisition without blocking retained reuse or release. VM display-name
 changes are allowed when the exact journal UUID, ownership marker, bundle and
 NIC identity remain consistent.
 
-`crabbox ls --provider utm` exposes separate `utm_installation`,
+`crabbox list --provider utm` exposes separate `utm_installation`,
 `utm_first_boot_submitted`, `utm_account_verified` and `utm_ssh_verified` labels.
 On failure, preserve the journal and use the normal exact-lease `stop` or cleanup
 path. Confirmed release deletes only the owned VM and its derived generated-key

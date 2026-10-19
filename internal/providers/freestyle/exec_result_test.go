@@ -75,7 +75,7 @@ func TestFreestyleRunHTTPExitStatusRetention(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch {
 					case r.Method == http.MethodPost && r.URL.Path == "/v5/vms":
-						_, _ = io.WriteString(w, `{"id":"vm-fixture"}`)
+						_, _ = io.WriteString(w, `{"id":"vm-fixture","state":"running"}`)
 					case r.Method == http.MethodPost && r.URL.Path == "/v5/vms/vm-fixture/exec-await":
 						execs++
 						if execs == 1 {

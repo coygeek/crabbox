@@ -248,14 +248,9 @@ func (b *freestyleBackend) createSandbox(ctx context.Context, client freestyleAP
 	// Only resize when explicitly configured; otherwise Freestyle applies its
 	// default resources. v5 sizing is a separate, grow-only resize operation.
 	create := freestyleCreateVMRequest{
-		Name:  name,
-		Ports: []freestylePortMapping{},
-	}
-	if b.cfg.Freestyle.VCPUs > 0 || b.cfg.Freestyle.MemoryGB > 0 {
-		create.Template = &freestyleCreateVMTemplate{
-			VcpuCount: b.cfg.Freestyle.VCPUs,
-			MemSizeGb: b.cfg.Freestyle.MemoryGB,
-		}
+		Name:     name,
+		VCPUs:    b.cfg.Freestyle.VCPUs,
+		MemoryGB: b.cfg.Freestyle.MemoryGB,
 	}
 	vm, err := client.CreateVM(ctx, create)
 	if err != nil {
@@ -268,7 +263,7 @@ func (b *freestyleBackend) createSandbox(ctx context.Context, client freestyleAP
 	if vm.ID == "" {
 		return "", "", "", core.Exit(5, "freestyle create vm returned no id")
 	}
-	if vm.State == "starting" {
+	if !freestyleStatusReady(vm.State) {
 		if err := waitForFreestyleVM(ctx, client, vm.ID); err != nil {
 			return "", "", "", b.rollbackCreatedVM(client, vm.ID, err)
 		}

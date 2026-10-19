@@ -135,6 +135,10 @@ Setup failures honor `--keep-on-failure`, reused VMs remain kept, and cleanup
 uses an uncanceled 30-second budget. Freestyle still owns its HTTP transport,
 command encoding, and existing claim/reclaim rules.
 
+Commands use Freestyle's default 30-second execution limit. A null or absent exec
+exit status is reported as a timeout, with captured output preserved.
+`--keep-on-failure` retains the VM for inspection after that timeout.
+
 ## Sync
 
 Freestyle advertises archive sync (`FeatureArchiveSync`). Crabbox supports
@@ -164,8 +168,7 @@ with binary reads, atomic writes, and chunked large-file transfers. This adapter
 uses exec for archive transfer, retaining Crabbox's existing staging, fallback,
 and workspace publication transaction. It sends binary data through exec's
 base64-encoded stdin in chunks of at most 512 KiB, leaving room for encoding
-and JSON within the service's 1 MiB request limit. File reads base64-encode guest
-output before transport so arbitrary bytes survive exec's UTF-8 JSON responses.
+and JSON within the service's 1 MiB request limit.
 If stdin upload fails, Crabbox falls back to decoded chunks below 32 KiB in
 base64 exec commands, leaving room for shell syntax within the 64 KiB command
 limit. The two attempts use separate temporary paths and publish only after

@@ -140,10 +140,6 @@ func TestFreestyleClientRedactsAPIKeyFromAllResponseErrors(t *testing.T) {
 		{name: "write file", invoke: func(client *freestyleHTTPClient) error {
 			return client.WriteFile(context.Background(), "vm123", "/tmp/file", "content", "utf8")
 		}},
-		{name: "read file", invoke: func(client *freestyleHTTPClient) error {
-			_, err := client.ReadFile(context.Background(), "vm123", "/tmp/file")
-			return err
-		}},
 	}
 
 	for _, tt := range tests {
@@ -265,9 +261,7 @@ func TestFreestyleCreateVMOmitsUnsetSizing(t *testing.T) {
 		if _, ok := body["firewall"]; !ok {
 			t.Fatal("missing firewall")
 		}
-		if err := json.NewEncoder(w).Encode(freestyleCreateVMResponse{ID: "vm123"}); err != nil {
-			t.Errorf("encode response: %v", err)
-		}
+		_, _ = io.WriteString(w, `{"id":"vm123","state":"running"}`)
 	}))
 	defer server.Close()
 
@@ -321,7 +315,7 @@ func TestFreestyleCreateVMResizesCustomSizing(t *testing.T) {
 			}))
 			defer server.Close()
 			client := &freestyleHTTPClient{apiKey: "test-key", apiURL: server.URL, httpClient: server.Client()}
-			vm, err := client.CreateVM(t.Context(), freestyleCreateVMRequest{Name: "crabbox-test", Template: &freestyleCreateVMTemplate{VcpuCount: 4, MemSizeGb: 8}})
+			vm, err := client.CreateVM(t.Context(), freestyleCreateVMRequest{Name: "crabbox-test", VCPUs: 4, MemoryGB: 8})
 			wantRequests := 2
 			if fail {
 				if err == nil || !strings.Contains(err.Error(), "CUSTOM_SIZING_NOT_ALLOWED") || vm.ID != "vm123" {

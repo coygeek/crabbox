@@ -187,10 +187,6 @@ func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
 	if err != nil || !bytes.Equal(disk, content) {
 		t.Fatalf("write bytes=%d err=%v", len(disk), err)
 	}
-	read, err := client.ReadFile(t.Context(), "vm123", file)
-	if err != nil || !bytes.Equal([]byte(read), content) {
-		t.Fatalf("read bytes=%d err=%v", len(read), err)
-	}
 	t.Logf("binary bytes=%d stdin chunks=%d maximum request body=%d maximum command=%d", len(content), counts.stdinChunks, counts.maxBodyBytes, counts.maxCommandBytes)
 	if counts.stdinChunks != 3 {
 		t.Errorf("stdin chunks=%d, want three wire-safe chunks", counts.stdinChunks)
@@ -201,10 +197,6 @@ func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
 	disk, err = os.ReadFile(file)
 	if err != nil || len(disk) != 0 {
 		t.Fatalf("empty write bytes=%d err=%v", len(disk), err)
-	}
-	_, err = client.ReadFile(t.Context(), "vm123", file+".missing")
-	if err == nil || !strings.Contains(err.Error(), "read file") {
-		t.Fatalf("missing file err=%v", err)
 	}
 }
 
@@ -239,13 +231,20 @@ func TestFreestyleCurrentAPISandboxNameFitsSlug(t *testing.T) {
 }
 
 func TestFreestyleCurrentAPIWaitBeforeClaim(t *testing.T) {
-	for _, state := range []string{"running", "stopped"} {
-		t.Run(state, func(t *testing.T) {
+	for _, tc := range []struct{ created, observed string }{
+		{"running", "running"},
+		{"starting", "running"},
+		{"starting", "stopped"},
+		{"stopped", "stopped"},
+		{"paused", "paused"},
+		{"pausing", "pausing"},
+	} {
+		t.Run(tc.created+"/"+tc.observed, func(t *testing.T) {
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			client := &fakeFreestyleClient{createID: "vm-starting", createState: "starting", getVM: freestyleVM{ID: "vm-starting", State: state}}
+			client := &fakeFreestyleClient{createID: "vm-starting", createState: tc.created, getVM: freestyleVM{ID: "vm-starting", State: tc.observed}}
 			backend := &freestyleBackend{rt: core.Runtime{Stderr: io.Discard}}
 			lease, _, _, err := backend.createSandbox(t.Context(), client, core.Repo{Root: t.TempDir(), Name: "repo"}, false, "")
-			if state == "running" {
+			if tc.observed == "running" {
 				if err != nil || lease != "fsb_vm-starting" || len(client.deleteIDs) != 0 {
 					t.Fatalf("lease=%s err=%v deletes=%v", lease, err, client.deleteIDs)
 				}

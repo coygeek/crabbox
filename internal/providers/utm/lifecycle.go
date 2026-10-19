@@ -10,6 +10,10 @@ import (
 	core "github.com/openclaw/crabbox/internal/cli"
 )
 
+// Guest teardown shares the release claim fence: an SSH identity can remain
+// valid after the same VM has been reclaimed or its claim generation advances.
+func (*backend) ReleaseLeaseConnectionCleanupSafe() bool { return false }
+
 func (b *backend) ReleaseLease(ctx context.Context, req core.ReleaseLeaseRequest) error {
 	unlock, err := b.lock(ctx)
 	if err != nil {

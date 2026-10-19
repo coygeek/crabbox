@@ -572,6 +572,31 @@ jobs:
       - name: Vet native helper
         run: go vet ./internal/applevmhelper ./cmd/crabbox-apple-vm-helper
 
+      - name: Require UTM release ownership before guest cleanup
+        shell: bash
+        env:
+          GOFLAGS: -mod=readonly -trimpath -p=2
+          GOMAXPROCS: 2
+        run: |
+          set -o pipefail
+          go test -race ./internal/cli -run '^TestUTMCoreRelease' -count=1 -timeout=5m -json | tee "$RUNNER_TEMP/utm-release-tests.jsonl"
+          node - "$RUNNER_TEMP/utm-release-tests.jsonl" <<'NODE'
+          const fs = require('node:fs');
+          const records = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+          const required = [
+            'TestUTMCoreReleaseRejectsStaleBeforeGuestCleanup',
+            'TestUTMCoreReleaseCurrentCleanupHoldsFence',
+          ];
+          for (const name of required) {
+            for (const action of ['run', 'pass']) {
+              if (!records.some(record => record.Test === name && record.Action === action)) {
+                throw new Error(`required UTM release contract ${name} did not ${action}`);
+              }
+            }
+          }
+          if (records.some(record => record.Action === 'skip')) throw new Error('required UTM release contract was skipped');
+          NODE
+
       - name: Require native macOS lease SSH root and managed-state contracts
         shell: bash
         run: |

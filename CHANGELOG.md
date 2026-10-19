@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Freestyle: report commands whose exec response has no exit status (timeouts) as failures instead of success, keeping output and failure retention. [PR 2896](https://github.com/openclaw/crabbox/pull/2896). Thanks @coygeek.
 - Sync: preserve Darwin symlink permissions in local Git seed and overlay snapshots without changing symlink targets or weakening source validation. [PR 2900](https://github.com/openclaw/crabbox/pull/2900).
 - Sync: retain redacted attempt, stage, and failed-check diagnostics when local Git-seed snapshot preparation exhausts its retries, without changing acceptance or cleanup. [PR 2899](https://github.com/openclaw/crabbox/pull/2899).
 - CI: move macOS checks and release verification to macOS 27, preserving macOS 13 deployment gates and Intel verification through Rosetta.

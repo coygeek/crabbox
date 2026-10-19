@@ -75,7 +75,9 @@ func (b *freestyleBackend) uploadArchive(ctx context.Context, client freestyleAP
 	if err := b.execShell(ctx, client, name, "rm -f "+core.ShellQuote(remoteB64)+" "+core.ShellQuote(decoded)); err != nil {
 		return err
 	}
-	const chunkSize = 48 * 1024
+	// Leave room below the 64 KiB command limit for base64 and shell syntax.
+	// A multiple of three avoids padding between concatenated encoded chunks.
+	const chunkSize = 32*1024 - 2
 	chunkCount := (len(data) + chunkSize - 1) / chunkSize
 	for i := 0; i < len(data); i += chunkSize {
 		end := min(i+chunkSize, len(data))

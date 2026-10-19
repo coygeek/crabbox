@@ -319,7 +319,8 @@ func (c *freestyleHTTPClient) WriteFile(ctx context.Context, id, path, content, 
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	const chunkSize = 1 << 20 // documented decoded stdin maximum
+	// Base64 and JSON must fit the service's 1 MiB HTTP request limit.
+	const chunkSize = 512 << 10
 	for offset := 0; ; offset += chunkSize {
 		end := min(offset+chunkSize, len(data))
 		redirect := ">"

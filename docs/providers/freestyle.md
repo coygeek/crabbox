@@ -163,10 +163,12 @@ Freestyle offers a [native filesystem API](https://www.freestyle.sh/docs/vms/fil
 with binary reads, atomic writes, and chunked large-file transfers. This adapter
 uses exec for archive transfer, retaining Crabbox's existing staging, fallback,
 and workspace publication transaction. It sends binary data through exec's
-base64-encoded stdin in chunks of at most 1 MiB. File reads base64-encode guest
+base64-encoded stdin in chunks of at most 512 KiB, leaving room for encoding
+and JSON within the service's 1 MiB request limit. File reads base64-encode guest
 output before transport so arbitrary bytes survive exec's UTF-8 JSON responses.
-If stdin upload fails, Crabbox falls back to smaller base64 chunks in exec
-commands. The two attempts use separate temporary paths and publish only after
+If stdin upload fails, Crabbox falls back to decoded chunks below 32 KiB in
+base64 exec commands, leaving room for shell syntax within the 64 KiB command
+limit. The two attempts use separate temporary paths and publish only after
 acknowledged upload or successful decoding. Shared sync owns extraction and workspace replacement. Failed publication is
 reported, and bounded cleanup preserves the primary error. An unknown remote
 write completing after cleanup can still leave its isolated attempt file; it

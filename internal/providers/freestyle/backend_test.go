@@ -1895,7 +1895,7 @@ func TestFreestyleUploadNativeAttemptIsolation(t *testing.T) {
 					t.Fatalf("fallback bytes changed: %v", err)
 				}
 			}
-			if chunks != 3 {
+			if chunks != 4 {
 				t.Fatalf("chunk count=%d", chunks)
 			}
 			for _, suffix := range []string{".api", ".exec.b64", ".exec"} {

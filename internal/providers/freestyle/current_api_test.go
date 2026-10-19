@@ -107,26 +107,54 @@ func TestFreestyleCurrentAPILifecycle(t *testing.T) {
 	}
 }
 
-func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
-	var requests int
+type freestyleWireCounts struct {
+	stdinChunks, commandChunks, rejectedStdin int
+	maxBodyBytes, maxCommandBytes             int
+}
+
+// Enforce the service's limits on the encoded request, not just decoded stdin.
+func newFreestyleBoundedExecServer(t *testing.T, rejectStdin bool) (*httptest.Server, *freestyleWireCounts) {
+	t.Helper()
+	counts := &freestyleWireCounts{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
 		if r.Method != "POST" || r.URL.Path != "/v5/vms/vm123/exec-await" {
 			http.Error(w, "unexpected transport route", 404)
 			return
 		}
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "request body exceeds the 1 MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		counts.maxBodyBytes = max(counts.maxBodyBytes, len(raw))
 		var body struct {
 			Command string `json:"command"`
 			Stdin   string `json:"stdin"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Error(err)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		counts.maxCommandBytes = max(counts.maxCommandBytes, len(body.Command))
+		if len(body.Command) > 64<<10 {
+			http.Error(w, "command cannot exceed 64 KiB", http.StatusBadRequest)
 			return
 		}
 		stdin, err := base64.StdEncoding.DecodeString(body.Stdin)
-		if err != nil || len(stdin) > 1<<20 {
-			t.Errorf("invalid stdin: size=%d err=%v", len(stdin), err)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if body.Stdin != "" {
+			if rejectStdin {
+				counts.rejectedStdin++
+				http.Error(w, "injected stdin transport failure", http.StatusServiceUnavailable)
+				return
+			}
+			counts.stdinChunks++
+		}
+		if strings.Contains(body.Command, "printf %s") {
+			counts.commandChunks++
 		}
 		cmd := exec.CommandContext(r.Context(), "bash", "-lc", body.Command)
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -143,6 +171,11 @@ func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"statusCode": code, "stdout": out.String(), "stderr": errs.String()})
 	}))
+	return server, counts
+}
+
+func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
+	server, counts := newFreestyleBoundedExecServer(t, false)
 	defer server.Close()
 	client := &freestyleHTTPClient{apiKey: "test-key", apiURL: server.URL, httpClient: server.Client()}
 	file := filepath.Join(t.TempDir(), "space and 'quote' $literal.bin")
@@ -158,8 +191,9 @@ func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
 	if err != nil || !bytes.Equal([]byte(read), content) {
 		t.Fatalf("read bytes=%d err=%v", len(read), err)
 	}
-	if requests < 3 {
-		t.Errorf("requests=%d: large input must be chunked", requests)
+	t.Logf("binary bytes=%d stdin chunks=%d maximum request body=%d maximum command=%d", len(content), counts.stdinChunks, counts.maxBodyBytes, counts.maxCommandBytes)
+	if counts.stdinChunks != 3 {
+		t.Errorf("stdin chunks=%d, want three wire-safe chunks", counts.stdinChunks)
 	}
 	if err := client.WriteFile(context.Background(), "vm123", file, "", "utf8"); err != nil {
 		t.Fatal(err)
@@ -230,5 +264,40 @@ func TestFreestyleCurrentAPIWaitBeforeClaim(t *testing.T) {
 	client := &fakeFreestyleClient{getVM: freestyleVM{State: "starting"}}
 	if err := waitForFreestyleVM(ctx, client, "vm-starting"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("wait cancellation=%v", err)
+	}
+}
+
+func TestFreestyleArchiveFallbackRespectsWireLimits(t *testing.T) {
+	server, counts := newFreestyleBoundedExecServer(t, true)
+	defer server.Close()
+	client := &freestyleHTTPClient{apiKey: "test-key", apiURL: server.URL, httpClient: server.Client()}
+	archive := filepath.Join(t.TempDir(), "space and 'quote' archive.tgz")
+	content := make([]byte, 2<<20)
+	for i := range content {
+		content[i] = byte(i*31 + i/256)
+	}
+	var stderr bytes.Buffer
+	backend := &freestyleBackend{rt: core.Runtime{Stderr: &stderr}}
+	if err := backend.uploadArchive(t.Context(), client, "vm123", archive, bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	disk, err := os.ReadFile(archive)
+	if err != nil || !bytes.Equal(disk, content) {
+		t.Fatalf("fallback bytes=%d err=%v", len(disk), err)
+	}
+	t.Logf("fallback bytes=%d rejected stdin=%d command chunks=%d maximum request body=%d maximum command=%d", len(content), counts.rejectedStdin, counts.commandChunks, counts.maxBodyBytes, counts.maxCommandBytes)
+	if counts.rejectedStdin != 1 || counts.commandChunks != 65 {
+		t.Fatalf("rejected stdin=%d command chunks=%d, want one rejection and 65 chunks", counts.rejectedStdin, counts.commandChunks)
+	}
+	if !strings.Contains(stderr.String(), "falling back to exec command upload") {
+		t.Fatalf("fallback warning missing: %s", &stderr)
+	}
+	if counts.maxBodyBytes >= 1<<20 || counts.maxCommandBytes >= 64<<10 {
+		t.Fatalf("wire limits: body=%d command=%d", counts.maxBodyBytes, counts.maxCommandBytes)
+	}
+	for _, suffix := range []string{".api", ".exec.b64", ".exec"} {
+		if _, err := os.Stat(archive + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("attempt residue %s: %v", suffix, err)
+		}
 	}
 }

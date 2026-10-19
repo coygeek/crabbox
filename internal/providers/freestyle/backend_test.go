@@ -1561,6 +1561,7 @@ func TestFreestyleOwnershipRequiresCanonicalGeneratedName(t *testing.T) {
 
 type fakeFreestyleClient struct {
 	createID          string
+	createState       string
 	createReq         *freestyleCreateVMRequest
 	create            func() error
 	getVM             freestyleVM
@@ -1593,7 +1594,11 @@ func (f *fakeFreestyleClient) CreateVM(_ context.Context, req freestyleCreateVMR
 	if id == "" {
 		id = "vm-test-abcdef"
 	}
-	return freestyleVM{ID: id, State: "running"}, nil
+	state := f.createState
+	if state == "" {
+		state = "running"
+	}
+	return freestyleVM{ID: id, State: state}, nil
 }
 
 func (f *fakeFreestyleClient) GetVM(_ context.Context, id string) (freestyleVM, error) {

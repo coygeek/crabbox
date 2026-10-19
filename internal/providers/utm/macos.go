@@ -403,7 +403,23 @@ func (b *backend) removeGeneratedKey(r record) error {
 		return err
 	}
 	if r.SSHKey != "" && r.SSHKey != filepath.Join(dir, "id_ed25519") {
-		return fmt.Errorf("UTM generated key path does not match lease ownership")
+		recordedDir := filepath.Dir(r.SSHKey)
+		if !filepath.IsAbs(r.SSHKey) || filepath.Clean(r.SSHKey) != r.SSHKey || filepath.Base(r.SSHKey) != "id_ed25519" || filepath.Base(recordedDir) != filepath.Base(dir) {
+			return fmt.Errorf("UTM generated key path does not match lease ownership")
+		}
+		// State-root aliases can spell the same owned directory differently.
+		// Compare their provider-state parents without following the recorded
+		// key leaf, which may already be absent after interrupted cleanup.
+		recordedParent, recordedErr := os.Stat(filepath.Dir(recordedDir))
+		currentParent, currentErr := os.Stat(filepath.Dir(dir))
+		if recordedErr != nil || currentErr != nil || !recordedParent.IsDir() || !currentParent.IsDir() || !os.SameFile(recordedParent, currentParent) {
+			return fmt.Errorf("UTM generated key path does not match lease ownership")
+		}
+		if info, e := os.Lstat(recordedDir); e != nil && !os.IsNotExist(e) {
+			return e
+		} else if e == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+			return fmt.Errorf("UTM generated key directory identity changed")
+		}
 	}
 	if info, e := os.Lstat(dir); os.IsNotExist(e) {
 		return nil

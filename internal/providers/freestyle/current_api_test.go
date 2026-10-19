@@ -112,7 +112,7 @@ func TestFreestyleCurrentAPIBinaryFileTransport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.Method != "POST" || r.URL.Path != "/v5/vms/vm123/exec-await" {
-			http.Error(w, "no file endpoint", 404)
+			http.Error(w, "unexpected transport route", 404)
 			return
 		}
 		var body struct {

@@ -324,8 +324,7 @@ func TestFreestyleCreateVMResizesCustomSizing(t *testing.T) {
 			vm, err := client.CreateVM(t.Context(), freestyleCreateVMRequest{Name: "crabbox-test", Template: &freestyleCreateVMTemplate{VcpuCount: 4, MemSizeGb: 8}})
 			wantRequests := 2
 			if fail {
-				wantRequests = 3
-				if err == nil || !strings.Contains(err.Error(), "CUSTOM_SIZING_NOT_ALLOWED") || vm.ID != "" {
+				if err == nil || !strings.Contains(err.Error(), "CUSTOM_SIZING_NOT_ALLOWED") || vm.ID != "vm123" {
 					t.Fatalf("vm=%+v err=%v", vm, err)
 				}
 			} else if err != nil || vm.ID != "vm123" {

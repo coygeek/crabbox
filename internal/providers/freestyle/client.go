@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 )
 
 type freestyleAPI interface {
+	// CreateVM preserves an allocated VM on setup failure; the caller owns rollback.
 	CreateVM(ctx context.Context, req freestyleCreateVMRequest) (freestyleVM, error)
 	GetVM(ctx context.Context, id string) (freestyleVM, error)
 	ListVMs(ctx context.Context) ([]freestyleVM, error)
@@ -175,12 +175,9 @@ func (c *freestyleHTTPClient) CreateVM(ctx context.Context, req freestyleCreateV
 	}
 	if req.Template != nil && vm.ID != "" {
 		if err := c.resizeVM(ctx, vm.ID, req.Template); err != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), freestyleCleanupTimeout)
-			defer cancel()
-			if cleanupErr := c.DeleteVM(cleanupCtx, vm.ID); cleanupErr != nil {
-				return freestyleVM{}, errors.Join(err, fmt.Errorf("freestyle cleanup vm %s after resize failed: %w", vm.ID, cleanupErr))
-			}
-			return freestyleVM{}, err
+			// Acquisition cleanup belongs to the backend, which also supplies exact
+			// adoption and stop commands if deleting the allocated VM fails.
+			return normalizeFreestyleVM(vm), err
 		}
 	}
 	return normalizeFreestyleVM(vm), nil
@@ -303,8 +300,9 @@ func (c *freestyleHTTPClient) exec(ctx context.Context, id string, request frees
 	return *parsed.StatusCode, nil
 }
 
-// v5 has no file endpoint. Binary stdin and base64 stdout avoid the exec
-// response's UTF-8 replacement of arbitrary file bytes.
+// This adapter uses exec for file transport alongside its archive transaction.
+// Freestyle also exposes native /fs read/write endpoints. Binary stdin and
+// base64 stdout preserve file bytes through exec's UTF-8 JSON responses.
 func (c *freestyleHTTPClient) WriteFile(ctx context.Context, id, path, content, encoding string) error {
 	data := []byte(content)
 	switch encoding {

@@ -82,7 +82,7 @@ freestyle:
   workdir: crabbox
   # Optional. Omit both to use Freestyle default resources. Explicit sizing uses the grow-only resize API after creation;
   # vcpus is a CPU count and memoryGB is converted to MiB. Requests below
-  # the default size or above plan limits fail and the new VM is deleted.
+  # the default size or above plan limits fail and trigger cleanup of the new VM.
   vcpus: 4
   memoryGB: 8
 ```
@@ -159,9 +159,12 @@ The provider also limits compressed archives to 64 MiB, checked before allocatio
 and again by a bounded upload read. `--force-sync-large` overrides the normal
 sync guardrails but not this compressed transport limit.
 
-The v5 API has no file endpoint. Archive upload sends binary data through exec's
+Freestyle offers a [native filesystem API](https://www.freestyle.sh/docs/vms/files)
+with binary reads, atomic writes, and chunked large-file transfers. This adapter
+uses exec for archive transfer, retaining Crabbox's existing staging, fallback,
+and workspace publication transaction. It sends binary data through exec's
 base64-encoded stdin in chunks of at most 1 MiB. File reads base64-encode guest
-output before transport so arbitrary bytes survive JSON's UTF-8 output handling.
+output before transport so arbitrary bytes survive exec's UTF-8 JSON responses.
 If stdin upload fails, Crabbox falls back to smaller base64 chunks in exec
 commands. The two attempts use separate temporary paths and publish only after
 acknowledged upload or successful decoding. Shared sync owns extraction and workspace replacement. Failed publication is
@@ -184,7 +187,10 @@ crabbox stop --provider freestyle --id fsb_vm123
 ```
 
 `--reclaim` is the explicit operator authorization: canonical name shape alone
-never reaches Freestyle command or delete operations.
+never reaches Freestyle command or delete operations. If partial acquisition
+(such as resizing) fails and deletion also fails, the error reports this exact
+adopt-then-stop sequence for the surviving VM. A cleanup failure does not bypass
+the exact-claim requirement.
 
 `--checksum` is not supported because Freestyle uses archive sync rather than
 Crabbox rsync checksum mode.

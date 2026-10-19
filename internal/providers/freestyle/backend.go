@@ -259,7 +259,11 @@ func (b *freestyleBackend) createSandbox(ctx context.Context, client freestyleAP
 	}
 	vm, err := client.CreateVM(ctx, create)
 	if err != nil {
-		return "", "", "", freestyleError("create vm", err)
+		cause := freestyleError("create vm", err)
+		if vm.ID != "" {
+			return "", "", "", b.rollbackCreatedVM(client, vm.ID, cause)
+		}
+		return "", "", "", cause
 	}
 	if vm.ID == "" {
 		return "", "", "", core.Exit(5, "freestyle create vm returned no id")

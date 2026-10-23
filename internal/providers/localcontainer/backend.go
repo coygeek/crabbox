@@ -1815,10 +1815,10 @@ func localContainerOCIRuntime(cfg core.Config) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	// Podman selects the OCI runtime with a global flag or containers.conf,
-	// not a run option.
+	// Podman takes the OCI runtime as a global option, which this setting
+	// does not pass yet.
 	if isPodmanRuntime(cfg.LocalContainer.Runtime) {
-		return "", core.Exit(2, "localContainer.ociRuntime is not supported with Podman; set the runtime in containers.conf instead")
+		return "", core.Exit(2, "localContainer.ociRuntime is not supported with Podman yet; Crabbox passes it only as docker run --runtime, while Podman selects the runtime with its global --runtime option")
 	}
 	if strings.HasPrefix(value, "-") || strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return "", core.Exit(2, "localContainer.ociRuntime %q must be an engine runtime name or path without whitespace or a leading dash", value)

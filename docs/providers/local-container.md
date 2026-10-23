@@ -319,9 +319,10 @@ than the engine default. Crabbox passes the value to the container engine as
 the Docker daemon's `runtimes` configuration, a containerd shim name such as
 `io.containerd.kata.v2` or `io.containerd.runsc.v1` whose shim binary is on the
 daemon's `PATH`. Values with whitespace or a leading dash are rejected before
-any container is created. Empty keeps the engine default. Podman selects its
-OCI runtime globally rather than per `run`, so Crabbox rejects this setting with
-Podman; configure the default runtime in `containers.conf` instead.
+any container is created. Empty keeps the engine default. The setting currently
+supports Docker only: Podman takes the runtime as its global
+`podman --runtime=<value>` option rather than a `run` option, and Crabbox does
+not pass that option yet, so it rejects this setting with Podman.
 
 Use this for hardware-virtualized leases with
 [Kata Containers](https://katacontainers.io/) or user-space kernel isolation

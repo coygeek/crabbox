@@ -79,6 +79,7 @@ var checkpointLeaseLabelKeys = []string{
 	"last_touched_at",
 	"lease",
 	"market",
+	"oci_runtime",
 	"pond",
 	"profile",
 	"provider",

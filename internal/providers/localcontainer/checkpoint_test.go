@@ -306,6 +306,22 @@ func TestCheckpointResetLeaseLabelsClearsOwnershipSelectors(t *testing.T) {
 	}
 }
 
+func TestCheckpointResetLeaseLabelsClearsOCIRuntime(t *testing.T) {
+	// A fork that clears the runtime must not inherit the source's label from
+	// the committed image, or the next checkpoint would record it again.
+	if !strings.Contains(checkpointResetLeaseLabelsChange(), ` oci_runtime=""`) {
+		t.Fatal("label reset missing oci_runtime")
+	}
+	metadata := checkpointMetadataForServer(
+		checkpointScope{Runtime: "docker", DaemonID: "daemon-123"},
+		core.Config{LocalContainer: core.LocalContainerConfig{User: "runner", WorkRoot: "/workspace"}},
+		core.Server{Labels: map[string]string{"ssh_user": "runner", "work_root": "/workspace", "oci_runtime": ""}},
+	)
+	if _, ok := metadata[checkpointMetadataOCIRuntime]; ok {
+		t.Fatalf("cleared label recorded an OCI runtime: %#v", metadata)
+	}
+}
+
 func TestCheckpointBootableCommandDoesNotReferenceBootstrapMount(t *testing.T) {
 	change := checkpointBootableCommandChange()
 	if strings.Contains(change, "crabbox-bootstrap") || !strings.HasPrefix(change, "CMD ") {

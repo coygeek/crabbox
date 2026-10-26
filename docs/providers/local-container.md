@@ -251,7 +251,7 @@ Provider flags:
 --local-container-memory <size>
 --local-container-network <network>
 --local-container-docker-socket
---local-container-oci-runtime <name-or-path>
+--local-container-oci-runtime <name>
 --local-container-volume host:container[:ro]   (repeatable)
 ```
 
@@ -315,11 +315,16 @@ Set `localContainer.ociRuntime`, `CRABBOX_LOCAL_CONTAINER_OCI_RUNTIME`, or
 `--local-container-oci-runtime` to run leases under a different OCI runtime
 than the engine default. Crabbox passes the value to the container engine as
 `run --runtime=<value>` and records it in the lease's `oci_runtime` label and
-`doctor` output. Use a runtime name the engine already knows: one registered in
-the Docker daemon's `runtimes` configuration, a containerd shim name such as
-`io.containerd.kata.v2` or `io.containerd.runsc.v1` whose shim binary is on the
-daemon's `PATH`. Values with whitespace or a leading dash are rejected before
-any container is created. Empty keeps the engine default. The setting currently
+`doctor` output; `config show` includes the value when set. Use a runtime name
+registered in the Docker daemon's `runtimes`
+configuration, such as `runsc` or `io.containerd.kata.v2`. Crabbox checks
+`docker info --format '{{json .Runtimes}}'` on the selected daemon before
+creation and during `doctor`; unknown names fail with registration guidance.
+Even containerd shims discoverable on the daemon's `PATH` must be registered.
+Names must match `[A-Za-z0-9][A-Za-z0-9_.-]*`: executable paths, whitespace,
+shell fragments, and leading dashes are rejected before any engine call.
+Empty keeps the engine default (normally `runc`), without a runtime argument,
+runtime label, or additional availability probe. The setting currently
 supports Docker only: Podman takes the runtime as its global
 `podman --runtime=<value>` option rather than a `run` option, and Crabbox does
 not pass that option yet, so it rejects this setting with Podman.
@@ -333,9 +338,15 @@ pass a host Unix socket into its guest VM, so `dockerSocket` fails at container
 creation under Kata. A stronger runtime narrows the shared-kernel exposure of a
 lease; it does not change the [trust model](../security.md), and `dockerSocket`
 still grants the lease control of the host engine where the runtime supports it.
+Kata and gVisor improve isolation but are not substitutes for VM providers when
+running hostile workloads or separating mutually untrusted tenants.
 
 Changing `ociRuntime` for a fixed lease ID returns `lease_id_conflict`; empty
 preserves the existing fixed-lease fingerprint.
+
+Like other Local Container strings, precedence is flag, environment, repository
+config, user config, then default. Empty file and environment values preserve
+the previous value; an explicit `--local-container-oci-runtime=` clears it.
 
 Host bind mounts must be passed explicitly with `--local-container-volume`.
 Crabbox intentionally ignores `localContainer.volumes` from config files because
@@ -517,13 +528,18 @@ container ID leaves both the container and claim untouched.
   This native path is currently Docker-only; Podman and nerdctl keep using
   workspace archives. Crabbox rejects native checkpoints when the workspace is
   stored in a mounted volume because `docker commit` omits mounted data.
+  With an alternate OCI runtime, native checkpoints require that runtime to
+  support Docker's commit operation. A commit failure reports the selected
+  runtime and suggests `--mode archive`; no usable checkpoint is recorded.
+  Commit captures container filesystem changes, not the running VM, kernel,
+  or process state of Kata or gVisor. Use archive mode when commit is unsupported.
 - `crabbox checkpoint fork <id>` launches a fresh lease from the committed
   image. Fork validates the checkpoint tag and Docker system ID, replays the
   recorded Docker runtime and daemon scope, replays the source lease's
   `ociRuntime` unless `--local-container-oci-runtime` overrides it, disables
   Docker socket passthrough, relocates the saved workspace into the new lease
-  path, and persists the scope
-  for later lease commands even when ambient Docker settings change. The source
+  path, and persists the scope for later lease commands even when ambient Docker
+  settings change. The source
   container user and work root are also replayed so relocation keeps ownership
   and path semantics intact. Fixed-ID ownership belongs to each new allocation:
   ordinary forks do not inherit the source's fixed intent, including when using

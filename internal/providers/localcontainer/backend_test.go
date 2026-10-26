@@ -4308,6 +4308,7 @@ func pendingAcquireBackendWithImageFixedIntent(t *testing.T, imageFixedIntent st
 	var containerPond string
 	var containerDaemonID string
 	var containerContext string
+	var containerOCIRuntime string
 	containerPresent := false
 	runner := &recordingRunner{responses: map[string]core.LocalCommandResult{}}
 	runner.run = func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
@@ -4341,6 +4342,8 @@ func pendingAcquireBackendWithImageFixedIntent(t *testing.T, imageFixedIntent st
 						containerDaemonID = value
 					case checkpointMetadataContext:
 						containerContext = value
+					case "oci_runtime":
+						containerOCIRuntime = value
 					}
 				}
 			}
@@ -4362,6 +4365,9 @@ func pendingAcquireBackendWithImageFixedIntent(t *testing.T, imageFixedIntent st
 			}
 			if containerContext != "" {
 				labels[checkpointMetadataContext] = containerContext
+			}
+			if containerOCIRuntime != "" {
+				labels["oci_runtime"] = containerOCIRuntime
 			}
 			if containerPond != "" {
 				labels["pond"] = containerPond
@@ -8302,6 +8308,8 @@ func writeLocalContainerReleaseClaimWithScope(t *testing.T, leaseID, containerID
 
 func defaultLocalContainerScopeResponse(req core.LocalCommandRequest) (core.LocalCommandResult, bool) {
 	switch commandKey(req.Args) {
+	case commandKey([]string{"info", "--format", "{{json .Runtimes}}"}):
+		return core.LocalCommandResult{Stdout: `{"runc":{},"runsc":{},"io.containerd.kata.v2":{}}`}, true
 	case commandKey([]string{"context", "show"}):
 		return core.LocalCommandResult{Stdout: "default\n"}, true
 	case commandKey([]string{"context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"}):
@@ -8758,12 +8766,12 @@ func TestCreateContainerOCIRuntime(t *testing.T) {
 	}{
 		{name: "engine default", configured: "", want: ""},
 		{name: "kata shim", configured: "io.containerd.kata.v2", want: "io.containerd.kata.v2"},
-		{name: "trimmed name", configured: " runsc ", want: "runsc"},
-		{name: "absolute path", configured: "/usr/local/bin/crun", want: "/usr/local/bin/crun"},
+		{name: "gvisor", configured: "runsc", want: "runsc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &recordingRunner{responses: map[string]core.LocalCommandResult{
-				"run": {Stdout: "container123456\n"},
+				"run":  {Stdout: "container123456\n"},
+				"info": {Stdout: `{"runc":{},"runsc":{},"io.containerd.kata.v2":{}}`},
 			}}
 			b := testBackend(runner)
 			cfg := b.configForRun()
@@ -8775,6 +8783,9 @@ func TestCreateContainerOCIRuntime(t *testing.T) {
 			t.Cleanup(func() { _ = os.RemoveAll(bootstrapDir) })
 			args := recordedArgsForCommand(t, runner, "run")
 			if tc.want == "" {
+				if recordedCommandCount(runner, "info") != 0 {
+					t.Fatal("engine default must not probe OCI runtimes")
+				}
 				if strings.Contains(args, "--runtime") || strings.Contains(args, "oci_runtime=") {
 					t.Fatalf("engine default must not pass a runtime:\n%s", args)
 				}
@@ -8790,7 +8801,7 @@ func TestCreateContainerOCIRuntime(t *testing.T) {
 }
 
 func TestCreateContainerRejectsUnsafeOCIRuntime(t *testing.T) {
-	for _, value := range []string{"--privileged", "-v", "kata runtime", "kata\nruntime", "kata\x00"} {
+	for _, value := range []string{"--privileged", "-v", "kata runtime", "kata\nruntime", "kata\x00", "/usr/local/bin/crun", "../crun", "runsc;id", "$(id)", "runsc|id", "runsc`id`", "runsc=value", "runsc\\evil", "runc\u200b", " runsc ", " "} {
 		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
 			runner := &recordingRunner{responses: map[string]core.LocalCommandResult{
 				"run": {Stdout: "container123456\n"},
@@ -8808,7 +8819,83 @@ func TestCreateContainerRejectsUnsafeOCIRuntime(t *testing.T) {
 			if creates := localContainerCreateCalls(runner); creates != 0 {
 				t.Fatalf("container creates=%d, want 0", creates)
 			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("invalid name reached the engine: %#v", runner.commandSummary())
+			}
 		})
+	}
+}
+
+func TestCreateContainerOCIRuntimeAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, want string
+		err                error
+	}{
+		{name: "unknown", output: `{"runc":{}}`, want: `register it in Docker's runtimes configuration`},
+		{name: "empty", output: `{}`, want: "not configured"},
+		{name: "null", output: `null`, want: "not configured"},
+		{name: "malformed", output: `not json`, want: "decode Docker configured OCI runtimes"},
+		{name: "daemon unavailable", err: errors.New("daemon unavailable"), want: "query Docker configured OCI runtimes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+				if !reflect.DeepEqual(req.Args, []string{"info", "--format", "{{json .Runtimes}}"}) {
+					t.Fatalf("unexpected command: %#v", req)
+				}
+				return core.LocalCommandResult{Stdout: tc.output}, tc.err
+			}}
+			b := testBackend(runner)
+			cfg := b.configForRun()
+			cfg.LocalContainer.OCIRuntime = "runsc"
+			id, dir, err := b.createContainer(context.Background(), cfg, "crabbox-oci", "cbx_123", "oci", "ssh-ed25519 fixture", true)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || id != "" || dir != "" {
+				t.Fatalf("id=%q dir=%q err=%v, want %q", id, dir, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFixedAcquireUnknownOCIRuntimeLeavesNoClaim(t *testing.T) {
+	b, runner, _, _, _, _ := pendingAcquireBackend(t)
+	b.cfg.LocalContainer.OCIRuntime = "missing-runtime"
+	const leaseID = "cbx_abcdef123469"
+	_, err := b.Acquire(t.Context(), core.AcquireRequest{
+		Repo: core.Repo{Root: t.TempDir()}, RequestedLeaseID: leaseID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("expected actionable unknown runtime error, got %v", err)
+	}
+	if _, exists, err := core.ReadLeaseClaimWithPresence(leaseID); err != nil || exists {
+		t.Fatalf("unknown runtime reserved a claim: exists=%v err=%v", exists, err)
+	}
+	if localContainerCreateCalls(runner) != 0 {
+		t.Fatal("unknown runtime created a container")
+	}
+}
+
+func TestDoctorOCIRuntimeUsesCapturedScope(t *testing.T) {
+	b := testBackend(&recordingRunner{})
+	b.cfg.LocalContainer.OCIRuntime = "runsc"
+	b.cfg.LocalContainer.CheckpointMetadata = checkpointScopeMetadata(checkpointScope{
+		Runtime: "docker", Context: "selected", Config: "/synthetic/docker-config",
+		Endpoint: "unix:///synthetic/docker.sock", DaemonID: "synthetic-daemon",
+	})
+	runner := &recordingRunner{run: func(req core.LocalCommandRequest) (core.LocalCommandResult, error) {
+		if len(req.Args) >= 3 && req.Args[2] == "info" {
+			if !reflect.DeepEqual(req.Args, []string{"--context", "selected", "info", "--format", "{{json .Runtimes}}"}) {
+				t.Fatalf("unexpected runtime discovery args: %v", req.Args)
+			}
+			if !slices.Contains(req.Env, "DOCKER_CONFIG=/synthetic/docker-config") {
+				t.Fatalf("discovery did not preserve Docker routing: %v", req.Env)
+			}
+			return core.LocalCommandResult{Stdout: `{"runc":{}}`}, nil
+		}
+		t.Fatalf("doctor should reject the runtime before inventory: %v", req.Args)
+		return core.LocalCommandResult{}, nil
+	}}
+	b.rt.Exec = runner
+	if _, err := b.Doctor(t.Context(), core.DoctorRequest{}); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("doctor error=%v", err)
 	}
 }
 
@@ -8859,8 +8946,9 @@ func TestFixedLocalContainerFingerprintOCIRuntime(t *testing.T) {
 	if kata == legacyFingerprint {
 		t.Fatal("ociRuntime must change the fixed create intent")
 	}
-	if got := fingerprint(" io.containerd.kata.v2 "); got != kata {
-		t.Fatalf("surrounding whitespace changed the fingerprint: %q != %q", got, kata)
+	cfg.LocalContainer.OCIRuntime = " io.containerd.kata.v2 "
+	if _, err := fixedLocalContainerFingerprint(cfg, req, "ssh-ed25519 fixture"); err == nil {
+		t.Fatal("invalid runtime must not become a persisted create intent")
 	}
 	if fingerprint("runsc") == kata {
 		t.Fatal("different runtimes must produce different fixed create intents")
@@ -8878,6 +8966,10 @@ func TestFixedAcquireOCIRuntimeDrift(t *testing.T) {
 	lease, err := b.Acquire(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	claim, err := core.ReadLeaseClaim(lease.LeaseID)
+	if err != nil || claim.Labels["oci_runtime"] != "io.containerd.kata.v2" || lease.Server.Labels["oci_runtime"] != "io.containerd.kata.v2" {
+		t.Fatalf("runtime was not retained in lease and ownership claim: lease=%v claim=%v err=%v", lease.Server.Labels, claim.Labels, err)
 	}
 	restarted := testBackend(runner)
 	restarted.cfg.LocalContainer.OCIRuntime = "io.containerd.kata.v2"

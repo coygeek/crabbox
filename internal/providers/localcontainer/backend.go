@@ -11,11 +11,11 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	core "github.com/openclaw/crabbox/internal/cli"
 	"github.com/openclaw/crabbox/internal/providers/shared"
@@ -203,6 +203,9 @@ func (b *backend) RebindResolvedLeaseTarget(target *core.LeaseTarget, leaseID st
 
 func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.LeaseTarget, error) {
 	cfg := b.configForRun()
+	if _, err := localContainerOCIRuntime(cfg); err != nil {
+		return core.LeaseTarget{}, err
+	}
 	architecture, err := b.assertRequestedArchitecture(ctx, cfg)
 	if err != nil {
 		return core.LeaseTarget{}, err
@@ -237,6 +240,10 @@ func (b *backend) Acquire(ctx context.Context, req core.AcquireRequest) (core.Le
 		b.cfg.LocalContainer.CheckpointMetadata = shared.CloneLabels(metadata)
 	}
 	if strings.TrimSpace(req.RequestedLeaseID) != "" {
+		// Reject unavailable runtimes before reserving a durable fixed-ID intent.
+		if _, err := b.checkOCIRuntime(ctx, cfg); err != nil {
+			return core.LeaseTarget{}, err
+		}
 		return b.acquireFixed(ctx, req, cfg)
 	}
 	leaseID := core.NewLeaseID()
@@ -982,6 +989,11 @@ func (b *backend) List(ctx context.Context, _ core.ListRequest) ([]core.LeaseVie
 }
 
 func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.DoctorResult, error) {
+	cfg := b.configForRun()
+	ociRuntime, err := b.checkOCIRuntime(ctx, cfg)
+	if err != nil {
+		return core.DoctorResult{}, err
+	}
 	runtime, contextName := b.runtimeInfo(ctx)
 	containers, err := b.listContainers(ctx)
 	if err != nil {
@@ -990,11 +1002,6 @@ func (b *backend) Doctor(ctx context.Context, req core.DoctorRequest) (core.Doct
 	probe := "unchecked"
 	if req.ProbeSSH {
 		probe = "requires_running_lease"
-	}
-	cfg := b.configForRun()
-	ociRuntime, err := localContainerOCIRuntime(cfg)
-	if err != nil {
-		return core.DoctorResult{}, err
 	}
 	msg := fmt.Sprintf("cli=ready control_plane=local inventory=ready api=list mutation=false leases=%d runtime=%s context=%s ssh_probe=%s image=%s docker_socket=%v oci_runtime=%s", len(containers), runtime, blank(contextName, "-"), probe, cfg.LocalContainer.Image, cfg.LocalContainer.DockerSocket, blank(ociRuntime, "-"))
 	return core.DoctorResult{Provider: providerName, Message: msg}, nil
@@ -1808,10 +1815,11 @@ func localContainerDisplayImage(cfg core.Config) string {
 	return cfg.LocalContainer.Image
 }
 
-// localContainerOCIRuntime returns the trimmed runtime name or path for
-// docker run --runtime. Empty keeps the engine default.
+var ociRuntimeNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+// Empty keeps the engine default; paths and shell syntax are never runtime names.
 func localContainerOCIRuntime(cfg core.Config) (string, error) {
-	value := strings.TrimSpace(cfg.LocalContainer.OCIRuntime)
+	value := cfg.LocalContainer.OCIRuntime
 	if value == "" {
 		return "", nil
 	}
@@ -1820,8 +1828,27 @@ func localContainerOCIRuntime(cfg core.Config) (string, error) {
 	if isPodmanRuntime(cfg.LocalContainer.Runtime) {
 		return "", core.Exit(2, "localContainer.ociRuntime is not supported with Podman yet; Crabbox passes it only as docker run --runtime, while Podman selects the runtime with its global --runtime option")
 	}
-	if strings.HasPrefix(value, "-") || strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return "", core.Exit(2, "localContainer.ociRuntime %q must be an engine runtime name or path without whitespace or a leading dash", value)
+	if !ociRuntimeNamePattern.MatchString(value) {
+		return "", core.Exit(2, "localContainer.ociRuntime %q must be a runtime name matching [A-Za-z0-9][A-Za-z0-9_.-]*; paths and shell syntax are not allowed", value)
+	}
+	return value, nil
+}
+
+func (b *backend) checkOCIRuntime(ctx context.Context, cfg core.Config) (string, error) {
+	value, err := localContainerOCIRuntime(cfg)
+	if err != nil || value == "" {
+		return value, err
+	}
+	result, err := b.containerRuntime(ctx, cfg, []string{"info", "--format", "{{json .Runtimes}}"}, nil, nil)
+	if err != nil {
+		return "", core.Exit(2, "query Docker configured OCI runtimes: %v: %s", err, trimCheckpointFailure(result.Stderr))
+	}
+	var runtimes map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result.Stdout), &runtimes); err != nil {
+		return "", core.Exit(2, "decode Docker configured OCI runtimes: %v", err)
+	}
+	if _, ok := runtimes[value]; !ok {
+		return "", core.Exit(2, "localContainer.ociRuntime %q is not configured in the selected Docker daemon; register it in Docker's runtimes configuration, then check docker info --format '{{json .Runtimes}}'", value)
 	}
 	return value, nil
 }
@@ -1838,7 +1865,7 @@ func (b *backend) createContainerWithOptions(ctx context.Context, cfg core.Confi
 	if digest, known := core.DefaultContainerImageDigest(cfg.LocalContainer.Image); known && digest == "" {
 		return "", "", core.Exit(2, "compiled container image is missing its reviewed digest")
 	}
-	ociRuntime, err := localContainerOCIRuntime(cfg)
+	ociRuntime, err := b.checkOCIRuntime(ctx, cfg)
 	if err != nil {
 		return "", "", err
 	}

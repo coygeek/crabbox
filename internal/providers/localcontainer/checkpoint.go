@@ -167,6 +167,9 @@ func createNativeCheckpoint(ctx context.Context, req core.NativeCheckpointCreate
 	commitCmd.Stderr = &commitStderr
 	out, err := commitCmd.Output()
 	if err != nil {
+		if ociRuntime := strings.TrimSpace(req.Server.Labels["oci_runtime"]); ociRuntime != "" {
+			return core.NativeCheckpointCreateResult{}, core.Exit(7, "docker commit %s with OCI runtime %s: %v: %s; use --mode archive if this runtime does not support Docker commit", containerID, ociRuntime, err, trimCheckpointFailure(commitStderr.String()))
+		}
 		return core.NativeCheckpointCreateResult{}, core.Exit(7, "docker commit %s: %v: %s", containerID, err, trimCheckpointFailure(commitStderr.String()))
 	}
 	imageID, err := parseCheckpointImageID(string(out))

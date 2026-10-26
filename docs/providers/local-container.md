@@ -533,6 +533,12 @@ container ID leaves both the container and claim untouched.
   runtime and suggests `--mode archive`; no usable checkpoint is recorded.
   Commit captures container filesystem changes, not the running VM, kernel,
   or process state of Kata or gVisor. Use archive mode when commit is unsupported.
+
+  An ordinary capture that fails before `docker commit` (for example, because a
+  warmup-only lease has no synced workspace yet) removes its new checkpoint
+  reservation, allowing normal lease cleanup. An attempted commit without a
+  confirmed image identity still blocks cleanup; historical unresolved records
+  remain held for reconciliation.
 - `crabbox checkpoint fork <id>` launches a fresh lease from the committed
   image. Fork validates the checkpoint tag and Docker system ID, replays the
   recorded Docker runtime and daemon scope, replays the source lease's

@@ -22,7 +22,17 @@ func TestLocalContainerOCIRuntimeConfigBuiltBinary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			configPath := filepath.Join(root, "user.yaml")
+			for _, key := range []string{"HOME", "USERPROFILE", "APPDATA", "XDG_CONFIG_HOME"} {
+				t.Setenv(key, root)
+			}
+			configDir, err := os.UserConfigDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(configDir, "crabbox", "config.yaml")
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(configPath, []byte("provider: local-container\nlocalContainer:\n  ociRuntime: user-runtime\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -31,7 +41,7 @@ func TestLocalContainerOCIRuntimeConfigBuiltBinary(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			env := []string{"HOME=" + root, "XDG_CONFIG_HOME=" + root, "XDG_STATE_HOME=" + root, "CRABBOX_CONFIG=" + configPath, "CRABBOX_LOCAL_CONTAINER_OCI_RUNTIME=" + tc.env}
+			env := []string{"HOME=" + root, "USERPROFILE=" + root, "APPDATA=" + root, "XDG_CONFIG_HOME=" + root, "XDG_STATE_HOME=" + root, "CRABBOX_LOCAL_CONTAINER_OCI_RUNTIME=" + tc.env}
 			stdout, stderr, code := runDescribeTestBinary(binary, root, env, "config", "show", "--json")
 			if code != 0 {
 				t.Fatalf("config show exit=%d: %s", code, stderr)

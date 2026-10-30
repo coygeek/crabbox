@@ -22,6 +22,7 @@ type macOSFixture struct {
 	actions        []string
 	fail           string
 	cancelCreate   func()
+	cancelInstall  func()
 	installQueries int
 	address        string
 }
@@ -69,6 +70,9 @@ func (f *macOSFixture) Run(ctx context.Context, req core.LocalCommandRequest) (c
 				return core.LocalCommandResult{}, errors.New("No installation was started")
 			}
 			if f.fail == "pending" {
+				if f.cancelInstall != nil {
+					f.cancelInstall()
+				}
 				return out("true\t0.5")
 			}
 			return out("false\t1.0")
@@ -201,8 +205,11 @@ func TestMacOSFailuresKeepDurablePhasesAndNeverReplay(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			b, f := setupMacOS(t)
 			f.fail = failure
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			if failure == "pending" {
+				f.cancelInstall = cancel
+			}
 			_, err := b.Acquire(ctx, core.AcquireRequest{})
 			if err == nil {
 				t.Fatal("accepted failed provisioning")

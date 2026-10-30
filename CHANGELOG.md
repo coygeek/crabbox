@@ -5,9 +5,13 @@
 ### Added
 
 - UTM: add an experimental local Apple Silicon provider for Linux template clones and fresh macOS guests, with lease-bound native checkpoints and in-place restore. [PR 2893](https://github.com/openclaw/crabbox/pull/2893). Thanks @coygeek.
+- Hyper-V: save and resume native Windows guests with exact-claim fencing, standard lifecycle JSON receipts, a shared Node/npm warm baseline, and bounded provisioning and host operations. [PR 2975](https://github.com/openclaw/crabbox/pull/2975). Thanks @paulcam206.
 
 ### Fixed
 
+- Azure: complete brokered cleanup when every claimed resource is definitively absent, retaining strict identity and ownership checks for any surviving resource.
+- Azure: clean up verified lease-owned companions that appear after an interrupted create records an empty or network-only cleanup claim, preserving original identities and deletion guards.
+- Parallels: wait for DHCP instead of probing SSH on a self-assigned link-local address, preserving the startup deadline and fresh-clone retry with an address-specific diagnostic. [PR 2981](https://github.com/openclaw/crabbox/pull/2981). Thanks @rustanacexd.
 - Docs: directory sync documentation now says the source root is the directory Crabbox runs from and that `run` has no `--workdir` flag. [PR 2982](https://github.com/openclaw/crabbox/pull/2982). Thanks @KrasimirKralev.
 - Coordinator recovery: preview and retire an exact interrupted create request after its cancellation token is lost, preserving ownership, generation checks, and pending cleanup evidence. [PR 2980](https://github.com/openclaw/crabbox/pull/2980). Thanks @vincentkoc.
 - Homebrew release verification: authorize the maintained formula in each credential-free verification workspace before loading it, keeping trust local even with machine Homebrew configuration, preserving formula identity, archive, signature, and installation checks. [PR 2979](https://github.com/openclaw/crabbox/pull/2979). Thanks @vincentkoc.

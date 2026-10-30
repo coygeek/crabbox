@@ -248,6 +248,12 @@ gracefully through its SSH session or UTM's guest shutdown request, wait for UTM
 to report stopped, then retry. Crabbox does not force-stop a running guest to
 capture it. A disk-only snapshot is never loaded into a running QEMU VM.
 
+Capture retains the exact repository claim admitted by the checkpoint request
+and holds its claim fence through native snapshot submission and readback.
+Reclaiming the lease or advancing that claim before capture causes the pending
+request to fail before creating a snapshot; resolve ownership again before
+retrying. Missing admitted claim authority also prevents capture.
+
 ```sh
 crabbox checkpoint create --provider utm --id LEASE_ID --mode native --json
 crabbox checkpoint inspect CHECKPOINT_ID --verify --json

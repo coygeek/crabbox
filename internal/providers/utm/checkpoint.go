@@ -144,9 +144,16 @@ func (b *backend) captureCheckpoint(ctx context.Context, req core.NativeCheckpoi
 	if req.Server.CloudID != r.VMID || req.Server.Provider != "utm" {
 		return result, fmt.Errorf("UTM checkpoint source differs from ownership journal")
 	}
-	claim, err := b.checkpointClaim(r, "")
+	claim, exists, set := core.ServerLeaseClaimSnapshot(req.Server)
+	if !set || !exists || claim.RepoRoot == "" {
+		return result, fmt.Errorf("UTM checkpoint capture requires its admitted repository claim snapshot")
+	}
+	current, err := b.checkpointClaim(r, claim.RepoRoot)
 	if err != nil {
 		return result, err
+	}
+	if !reflect.DeepEqual(current, claim) {
+		return result, fmt.Errorf("UTM checkpoint source claim changed after admission")
 	}
 	token, err := randomToken()
 	if err != nil {

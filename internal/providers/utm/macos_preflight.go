@@ -116,9 +116,9 @@ func (b *backend) doctorMacOS(ctx context.Context) (core.DoctorResult, error) {
 	add := func(name string, err error, ok string) {
 		c := core.DoctorCheck{Check: name, Status: "ok", Message: ok}
 		if err != nil {
-			c.Status = "error"
+			c.Status = "failed"
 			c.Message = err.Error()
-			result.Status = "error"
+			result.Status = "failed"
 		}
 		result.Checks = append(result.Checks, c)
 	}

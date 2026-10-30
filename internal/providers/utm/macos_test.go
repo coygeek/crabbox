@@ -327,7 +327,7 @@ func TestPrivateCommandSuppressesAllCredentialBearingResults(t *testing.T) {
 func TestMacOSDoctorDoesNotProvisionOrCreateJournal(t *testing.T) {
 	b, f := setupMacOS(t)
 	result, err := b.Doctor(context.Background(), core.DoctorRequest{ProbeSSH: true})
-	if err != nil || result.Status == "error" {
+	if err != nil || core.DoctorChecksStatus(result.Checks) != "ok" {
 		t.Fatalf("doctor failed: %v", err)
 	}
 	if len(f.actions) != 0 {

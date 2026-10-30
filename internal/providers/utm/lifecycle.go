@@ -231,31 +231,31 @@ func (b *backend) Doctor(ctx context.Context, _ core.DoctorRequest) (core.Doctor
 	}
 	_, err := b.command(ctx, b.cfg.UTM.AppPath+"/Contents/MacOS/utmctl", []string{"--help"}, nil)
 	if err != nil {
-		add("cli", "error", err.Error())
-		result.Status = "error"
+		add("cli", "failed", err.Error())
+		result.Status = "failed"
 	} else {
 		add("cli", "ok", "bundled utmctl executable is available; application control is checked separately")
 	}
 	vms, err := b.inventory(ctx)
 	if err != nil {
-		add("application-control", "error", err.Error())
-		result.Status = "error"
+		add("application-control", "failed", err.Error())
+		result.Status = "failed"
 		return result, nil
 	}
 	add("application-control", "ok", "published UTM scripting inventory is readable; no VM created or started")
 	template, ok := findVM(vms, b.cfg.UTM.Template)
 	if !ok {
-		add("template", "error", "set utm.template to the UUID of a stopped prepared Linux QEMU VM")
-		result.Status = "error"
+		add("template", "failed", "set utm.template to the UUID of a stopped prepared Linux QEMU VM")
+		result.Status = "failed"
 	} else if err = validateTemplate(template); err != nil {
-		add("template", "error", err.Error())
-		result.Status = "error"
+		add("template", "failed", err.Error())
+		result.Status = "failed"
 	} else {
 		add("template", "ok", "stopped QEMU template with one emulated NIC; guest OS and tools remain unverified until authenticated acquisition")
 	}
 	if root, storageErr := b.storageRoot(); storageErr != nil {
-		add("storage", "error", storageErr.Error())
-		result.Status = "error"
+		add("storage", "failed", storageErr.Error())
+		result.Status = "failed"
 	} else {
 		add("storage", "ok", "clone bundle directory is accessible: "+root+"; mutation=false")
 	}

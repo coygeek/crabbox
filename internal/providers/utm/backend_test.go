@@ -328,7 +328,7 @@ func TestFailedRemovalRemainsRetryable(t *testing.T) {
 func TestOwnershipMismatchAndReadOnlyDoctor(t *testing.T) {
 	b, f := setup(t)
 	result, err := b.Doctor(context.Background(), core.DoctorRequest{ProbeSSH: true})
-	if err != nil || result.Status == "error" {
+	if err != nil || core.DoctorChecksStatus(result.Checks) != "ok" {
 		t.Fatalf("doctor=%#v err=%v", result, err)
 	}
 	for _, c := range f.calls {

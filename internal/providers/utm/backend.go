@@ -15,9 +15,10 @@ import (
 )
 
 type backend struct {
-	cfg    core.Config
-	rt     core.Runtime
-	hostOS string
+	cfg      core.Config
+	rt       core.Runtime
+	hostOS   string
+	hostArch string
 }
 
 func (b *backend) Spec() core.ProviderSpec { return (Provider{}).Spec() }
@@ -276,6 +277,14 @@ func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.Le
 	if r.State != "ready" {
 		return lease, fmt.Errorf("UTM lease %s acquisition is incomplete (state=%s); release it and acquire again", r.LeaseID, r.State)
 	}
+	if !exists || claim.Provider != "utm" || claim.CloudID != r.VMID || claim.ProviderScope != (Provider{}).ClaimScope(b.cfg) {
+		return lease, fmt.Errorf("UTM retained lease requires its current matching claim; release it and acquire again")
+	}
+	if req.Repo.Root != "" {
+		if err = core.CheckLeaseClaimRepositoryOwner(r.LeaseID, claim, req.Repo.Root, req.Reclaim); err != nil {
+			return lease, err
+		}
+	}
 	v, ok := findVM(vms, r.VMID)
 	if !ok {
 		return lease, fmt.Errorf("UTM owned clone %s is absent", r.VMID)
@@ -289,23 +298,25 @@ func (b *backend) Resolve(ctx context.Context, req core.ResolveRequest) (core.Le
 	if err = shared.AuthorizeClaimActivity(claim); err != nil {
 		return lease, err
 	}
-	if r.isMacOS() {
-		if err = b.validateOwnedMacOS(ctx, r, vms, false); err != nil {
-			return lease, err
+	// Readiness executes guest commands and may repair a local host-key pin.
+	// Keep the resolved claim unchanged through all continuing-access effects.
+	err = core.WithLeaseClaimUnchangedContext(ctx, r.LeaseID, claim, func() error {
+		if r.isMacOS() {
+			if err := b.validateOwnedMacOS(ctx, r, vms, false); err != nil {
+				return err
+			}
+			if !r.SSHReady {
+				return fmt.Errorf("UTM macOS continuing access is incomplete; release and acquire again")
+			}
+			if err := b.refreshMacOSAddress(ctx, &r); err != nil {
+				return err
+			}
+			lease = b.target(r, vms)
 		}
-		if !r.SSHReady {
-			return lease, fmt.Errorf("UTM macOS continuing access is incomplete; release and acquire again")
-		}
-		if err = b.refreshMacOSAddress(ctx, &r); err != nil {
-			return lease, err
-		}
-		lease = b.target(r, vms)
-	}
-	if err = waitForSSHReady(ctx, &lease.SSH, b.rt.Stderr, "UTM retained guest identity", b.cfg.UTM.StartupTimeout); err != nil {
+		return waitForSSHReady(ctx, &lease.SSH, b.rt.Stderr, "UTM retained guest identity", b.cfg.UTM.StartupTimeout)
+	})
+	if err != nil {
 		return lease, err
-	}
-	if exists && (claim.Provider != "utm" || claim.CloudID != r.VMID || claim.ProviderScope != (Provider{}).ClaimScope(b.cfg)) {
-		return lease, fmt.Errorf("UTM retained lease claim identity mismatch")
 	}
 	updated, err := b.claimTarget(lease, r.Slug, req.Repo.Root, req.Reclaim, claim, exists)
 	if err != nil {

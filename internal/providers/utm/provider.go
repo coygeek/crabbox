@@ -117,7 +117,7 @@ func (p Provider) Configure(cfg core.Config, rt core.Runtime) (core.Backend, err
 	cfg.SSHKey = c.SSHKey
 	cfg.WorkRoot = c.WorkRoot
 	cfg.SSHFallbackPorts = nil
-	return &backend{cfg: cfg, rt: rt, hostOS: runtime.GOOS}, nil
+	return &backend{cfg: cfg, rt: rt, hostOS: runtime.GOOS, hostArch: runtime.GOARCH}, nil
 }
 func (Provider) ConfigShowSection(cfg core.Config) core.ProviderConfigShowSection {
 	c := cfg.UTM

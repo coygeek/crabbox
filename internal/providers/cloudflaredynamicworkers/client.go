@@ -320,17 +320,16 @@ func (c *client) Readiness(ctx context.Context) (readinessResponse, error) {
 
 func (c *client) Run(ctx context.Context, req runRequest) (runResponse, error) {
 	var out runResponse
-	requestCtx, cancelRequest := c.responseRequestContext(ctx)
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
 	httpReq, err := shared.NewJSONRequest(requestCtx, http.MethodPost, c.baseURL+"/v1/runs", req)
 	if err != nil {
-		cancelRequest()
 		return out, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		cancelRequest()
 		return out, err
 	}
 	defer func() {
@@ -338,7 +337,7 @@ func (c *client) Run(ctx context.Context, req runRequest) (runResponse, error) {
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		err := c.decodeJSONResponse(ctx, resp.Body, &out, cancelRequest)
+		err := c.decodeJSONResponse(ctx, cancelRequest, resp.Body, &out)
 		if err != nil {
 			return out, &responseContractError{message: "loader response is not valid JSON", cause: err}
 		}
@@ -348,7 +347,7 @@ func (c *client) Run(ctx context.Context, req runRequest) (runResponse, error) {
 		}
 		return out, err
 	}
-	responseBody, readErr := c.readResponseBody(ctx, resp.Body, 64*1024, cancelRequest)
+	responseBody, readErr := c.readResponseBody(ctx, cancelRequest, resp.Body, 64*1024)
 	responseErr := c.responseErrorBody(resp.StatusCode, resp.Status, responseBody)
 	decoded, lifecycleResponse, decodeErr := decodeRunErrorResponse(responseBody)
 	if lifecycleResponse {
@@ -536,7 +535,7 @@ func (c *client) DeleteAcknowledgedComplete(ctx context.Context, id string) erro
 
 func (c *client) doJSON(ctx context.Context, method, endpoint string, input any, output any) error {
 	for attempt := 0; ; attempt++ {
-		requestCtx, cancelRequest := c.responseRequestContext(ctx)
+		requestCtx, cancelRequest := context.WithCancel(ctx)
 		req, err := shared.NewJSONRequest(requestCtx, method, c.baseURL+endpoint, input)
 		if err != nil {
 			cancelRequest()
@@ -564,12 +563,12 @@ func (c *client) doJSON(ctx context.Context, method, endpoint string, input any,
 			_ = resp.Body.Close()
 		}()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return c.responseError(ctx, resp, cancelRequest)
+			return c.responseError(ctx, cancelRequest, resp)
 		}
 		if output == nil {
 			return nil
 		}
-		return c.decodeJSONResponse(ctx, resp.Body, output, cancelRequest)
+		return c.decodeJSONResponse(ctx, cancelRequest, resp.Body, output)
 	}
 }
 
@@ -582,8 +581,8 @@ func retryableReadStatus(statusCode int) bool {
 	}
 }
 
-func (c *client) responseError(ctx context.Context, resp *http.Response, cancelRequest context.CancelFunc) error {
-	body, err := c.readResponseBody(ctx, resp.Body, 64*1024, cancelRequest)
+func (c *client) responseError(ctx context.Context, cancelRequest context.CancelFunc, resp *http.Response) error {
+	body, err := c.readResponseBody(ctx, cancelRequest, resp.Body, 64*1024)
 	responseErr := c.responseErrorBody(resp.StatusCode, resp.Status, body)
 	if err != nil {
 		return fmt.Errorf("%w: reading response body: %w", responseErr, err)
@@ -591,7 +590,7 @@ func (c *client) responseError(ctx context.Context, resp *http.Response, cancelR
 	return responseErr
 }
 
-func (c *client) decodeJSONResponse(ctx context.Context, body io.ReadCloser, output any, cancelRequest context.CancelFunc) error {
+func (c *client) decodeJSONResponse(ctx context.Context, cancelRequest context.CancelFunc, body io.ReadCloser, output any) error {
 	return c.withResponseBodyDeadline(ctx, cancelRequest, func() error {
 		decoder := json.NewDecoder(body)
 		if err := decoder.Decode(output); err != nil {
@@ -608,7 +607,7 @@ func (c *client) decodeJSONResponse(ctx context.Context, body io.ReadCloser, out
 	})
 }
 
-func (c *client) readResponseBody(ctx context.Context, body io.ReadCloser, limit int64, cancelRequest context.CancelFunc) ([]byte, error) {
+func (c *client) readResponseBody(ctx context.Context, cancelRequest context.CancelFunc, body io.ReadCloser, limit int64) ([]byte, error) {
 	var out []byte
 	err := c.withResponseBodyDeadline(ctx, cancelRequest, func() error {
 		var err error
@@ -618,26 +617,13 @@ func (c *client) readResponseBody(ctx context.Context, body io.ReadCloser, limit
 	return out, err
 }
 
-// Allocate cancellation authority before dispatch, without starting the body
-// budget until response headers arrive. Disabled body timeouts preserve the
-// caller's exact request context and rely on its existing cancellation policy.
-func (c *client) responseRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if c.responseBodyTimeout <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithCancel(ctx)
-}
-
 func (c *client) withResponseBodyDeadline(ctx context.Context, cancelRequest context.CancelFunc, read func() error) error {
 	if c.responseBodyTimeout <= 0 {
 		return read()
 	}
 	bodyCtx, cancel := context.WithTimeout(ctx, c.responseBodyTimeout)
 	defer cancel()
-	// Cancel the request to interrupt response reads. Concurrent Body.Close
-	// may instead start asynchronous HTTP/1 draining behind the reader's mutex.
-	// Each callback owns only this attempt's context, including when it races
-	// completion; it cannot cancel another retry or request on the same client.
+	// Body.Close can wait for an active read; cancel the transport to unblock it.
 	stopCancel := context.AfterFunc(bodyCtx, cancelRequest)
 	defer stopCancel()
 	err := read()

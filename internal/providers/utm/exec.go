@@ -8,6 +8,12 @@ import (
 	"github.com/openclaw/crabbox/internal/providers/shared"
 )
 
+// Run admission already owns the exclusive claim fence. Reuse the same
+// observation-only preparation as exec without taking the host lock.
+func (b *backend) ResolveRunLeaseUnderClaim(ctx context.Context, req core.ResolveRequest, original core.LeaseClaim) (core.LeaseTarget, error) {
+	return b.ResolveExecLeaseUnderClaim(ctx, req, original)
+}
+
 // ResolveExecLeaseUnderClaim runs under core's shared claim fence. It must not
 // acquire utm-host.lock: release holds that lock while awaiting the exclusive
 // claim fence. Read immutable ownership state and never publish/reenter claims.

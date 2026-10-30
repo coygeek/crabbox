@@ -48,8 +48,8 @@ const inventoryScript = `function run(argv) {
 }`
 
 func (b *backend) command(ctx context.Context, name string, args []string, input io.Reader) (core.LocalCommandResult, error) {
-	if b.hostOS != "darwin" {
-		return core.LocalCommandResult{}, fmt.Errorf("provider=utm requires a local macOS host with UTM application automation access")
+	if b.hostOS != "darwin" || b.hostArch != "arm64" {
+		return core.LocalCommandResult{}, fmt.Errorf("provider=utm requires a local Apple Silicon macOS host with UTM application automation access")
 	}
 	// Bound each Apple event independently, including otherwise unbounded passive calls.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)

@@ -21,7 +21,7 @@ func TestNativeMacOSImageAndAccountPreflight(t *testing.T) {
 	cfg := core.BaseConfig()
 	cfg.UTM.IPSW = path
 	cfg.UTM.User = "crabbox"
-	b := &backend{cfg: cfg, rt: core.RuntimeForProviderOperation(io.Discard), hostOS: "darwin"}
+	b := &backend{cfg: cfg, rt: core.RuntimeForProviderOperation(io.Discard), hostOS: "darwin", hostArch: "arm64"}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	password, err := randomToken()

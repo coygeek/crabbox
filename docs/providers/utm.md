@@ -1,5 +1,9 @@
 # UTM
 
+**Experimental.** Managed local guests on Apple Silicon, with lease-bound native
+checkpoints. Validate the full guest lifecycle on your UTM installation before
+relying on it; automated tests use fakes and do not boot UTM guests.
+
 UTM runs a disposable clone of a prepared, stopped Linux ARM64 QEMU VM or
 installs a fresh Apple macOS ARM64 VM from an explicit local IPSW on the local Mac. Crabbox owns the clone and reuses the normal SSH sync, command,
 results, retention and release paths. The source template stays outside the
@@ -7,7 +11,7 @@ lease's destructive operations.
 
 ## Requirements
 
-- A local macOS host with UTM and its bundled `utmctl`. UTM's published scripting
+- A local Apple Silicon macOS host with UTM and its bundled `utmctl`. UTM's published scripting
   interface must be accessible from the process running Crabbox. macOS may ask
   for Automation permission to control UTM. Remote UTM hosts are unsupported.
 - Configure `utm.storageRoot` to the existing local directory where UTM creates
@@ -220,8 +224,9 @@ reinstall. It never resets an existing guest account.
 The Apple backend's published `query ip` reads its first NIC's IPv4 ARP entry.
 Crabbox polls this within the startup deadline and verifies the same MAC inside
 the authenticated guest. DHCP addresses can change; retained-lease resolution
-refreshes discovery and verifies the pinned key and guest identity, without
-reinstalling or replaying first-boot credentials. The original IPSW can be moved
+refreshes discovery and verifies the pinned key and guest identity under the
+current claim fence, without reinstalling or replaying first-boot credentials.
+A ready lease with a missing claim must be released and acquired again. The original IPSW can be moved
 after acquisition without blocking retained reuse or release. VM display-name
 changes are allowed when the exact journal UUID, ownership marker, bundle and
 NIC identity remain consistent.
@@ -262,8 +267,10 @@ Keep the lease until its checkpoints are no longer needed. `--retire-source` is
 refused because deletion would destroy the captured state. Checkpoint fork,
 cross-host migration and portable backups are unsupported.
 
-The provider records the exact public snapshot UUID, VM UUID, backend, storage
-scope, capture state and whether UTM included running state. A stopped suspended
+Snapshot names include the lease ID and a fresh random token. Capture refuses
+a returned UUID that existed before the request. The provider records the exact
+public snapshot UUID, VM UUID, backend, storage scope, capture state and whether
+UTM included running state. A stopped suspended
 VM may include running state; the provider records UTM's actual result rather
 than assuming that every stopped snapshot is disk-only. QEMU stopped snapshots
 require qcow2 images. Eligible writable internal disks and applicable firmware

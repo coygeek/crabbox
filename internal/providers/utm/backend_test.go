@@ -175,6 +175,7 @@ func setup(t *testing.T) (*backend, *controlFixture) {
 	}
 	b := configured.(*backend)
 	b.hostOS = "darwin"
+	b.hostArch = "arm64"
 	original := waitForSSHReady
 	waitForSSHReady = func(ctx context.Context, target *core.SSHTarget, _ io.Writer, _ string, _ time.Duration) error {
 		if err := ctx.Err(); err != nil {

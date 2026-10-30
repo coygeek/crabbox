@@ -28,6 +28,11 @@ type ProviderRouter interface {
 	RouteConfig(cfg *Config, fs *flag.FlagSet, values any) error
 }
 
+// ProviderCoordinatorRequest owns provider-specific non-secret admission metadata.
+type ProviderCoordinatorRequest interface {
+	CoordinatorRequestFields(Config) map[string]any
+}
+
 type ProviderConfigValidator interface {
 	ValidateConfig(cfg Config) error
 }
@@ -122,6 +127,10 @@ type ProviderReadyPoolImageIdentityRequest struct {
 
 // ProviderReadyPoolImageIdentityCapability owns provider-specific validation
 // of immutable image evidence returned with a typed ready-pool lease.
+type ProviderReadyPoolTargetCapability interface {
+	SupportsReadyPoolTarget(string) bool
+}
+
 type ProviderReadyPoolImageIdentityCapability interface {
 	ReadyPoolImageIdentityMatchesLease(ProviderReadyPoolImageIdentityRequest) bool
 }
@@ -611,17 +620,18 @@ type NativeCheckpointSourcePolicyProvider interface {
 }
 
 type NativeCheckpointImage struct {
-	ID           string
-	Name         string
-	State        string
-	Provider     string
-	Kind         string
-	Region       string
-	AccountID    string
-	ResourceID   string
-	SnapshotIDs  []string
-	Architecture string
-	Direct       bool
+	ID               string
+	Name             string
+	State            string
+	Provider         string
+	Kind             string
+	Region           string
+	AccountID        string
+	ResourceID       string
+	ResourceUniqueID string
+	SnapshotIDs      []string
+	Architecture     string
+	Direct           bool
 }
 
 type NativeCheckpointCreateRequest struct {
@@ -942,10 +952,11 @@ const (
 	// FeatureFixedLeaseID advertises caller-supplied idempotent lease IDs.
 	FeatureFixedLeaseID Feature = "fixed-lease-id"
 	// FeatureFixedCurrentRepoStop requires RepositoryScopedStopBackend for fixed IDs.
-	FeatureFixedCurrentRepoStop Feature = "fixed-current-repo-stop"
-	FeaturePauseResume          Feature = "pause-resume"
-	FeatureLeaseHeartbeat       Feature = "lease-heartbeat"
-	FeatureMCP                  Feature = "mcp-attachments"
+	FeatureFixedCurrentRepoStop   Feature = "fixed-current-repo-stop"
+	FeaturePauseResume            Feature = "pause-resume"
+	FeatureSessionDiskRetentionV1 Feature = "session-disk-retention-v1"
+	FeatureLeaseHeartbeat         Feature = "lease-heartbeat"
+	FeatureMCP                    Feature = "mcp-attachments"
 )
 
 const FeaturePreparedArtifactWorkspace Feature = "prepared-artifact-workspace"
@@ -1533,13 +1544,15 @@ type RepositoryScopedStopBackend interface {
 }
 
 type PauseRequest struct {
-	Options LeaseOptions
-	ID      string
+	Lifecycle RetentionLifecycleRequest
+	Options   LeaseOptions
+	ID        string
 }
 
 type ResumeRequest struct {
-	Options LeaseOptions
-	ID      string
+	Lifecycle RetentionLifecycleRequest
+	Options   LeaseOptions
+	ID        string
 }
 
 type CleanupRequest struct {

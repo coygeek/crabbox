@@ -167,7 +167,7 @@ func (b *backend) captureCheckpoint(ctx context.Context, req core.NativeCheckpoi
 		if err != nil {
 			return err
 		}
-		m := checkpointMetadata{Version: 1, LeaseID: r.LeaseID, VMID: r.VMID, Token: r.Token, AppPath: r.AppPath, StorageRoot: b.cfg.UTM.StorageRoot, BundlePath: r.BundlePath, Backend: v.Backend, TargetOS: b.cfg.TargetOS, SourceScope: claim.ProviderScope, SourceClaimedAt: claim.ClaimedAt, SourceRevision: claim.Revision, RepoRoot: claim.RepoRoot, UTMVersion: version, HostVersion: host, CaptureState: v.Status, SnapshotName: "crabbox-" + token, Phase: "pending", Scope: scope}
+		m := checkpointMetadata{Version: 1, LeaseID: r.LeaseID, VMID: r.VMID, Token: r.Token, AppPath: r.AppPath, StorageRoot: b.cfg.UTM.StorageRoot, BundlePath: r.BundlePath, Backend: v.Backend, TargetOS: b.cfg.TargetOS, SourceScope: claim.ProviderScope, SourceClaimedAt: claim.ClaimedAt, SourceRevision: claim.Revision, RepoRoot: claim.RepoRoot, UTMVersion: version, HostVersion: host, CaptureState: v.Status, SnapshotName: "crabbox-" + r.LeaseID + "-" + token, Phase: "pending", Scope: scope}
 		result = m.result("pending")
 		if err = req.Persist(result); err != nil {
 			return err
@@ -181,6 +181,9 @@ func (b *backend) captureCheckpoint(ctx context.Context, req core.NativeCheckpoi
 		captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
 		id, createErr := b.createSnapshot(captureCtx, r.VMID, m.SnapshotName)
+		if _, existed := findSnapshot(before, id); existed {
+			return fmt.Errorf("UTM capture returned a pre-existing snapshot UUID; no ownership accepted")
+		}
 		if id != "" {
 			m.SnapshotID = id
 			result = m.result("pending")

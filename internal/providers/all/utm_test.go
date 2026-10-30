@@ -84,6 +84,9 @@ func TestUTMDiscoveryConfigAndTargetAdmission(t *testing.T) {
 	if _, ok := configured.(core.ExecLeaseClaimResolver); !ok {
 		t.Fatal("UTM claim-exec capability lacks a claim-fenced SSH resolver")
 	}
+	if _, ok := configured.(core.RunLeaseClaimResolver); !ok {
+		t.Fatal("UTM reuse lacks claim-fenced run admission")
+	}
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	values := p.RegisterFlags(fs, cfg)
 	if err = fs.Parse([]string{"--utm-user=override", "--utm-template=22222222-2222-4222-8222-222222222222"}); err != nil {
